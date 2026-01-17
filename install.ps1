@@ -1,7 +1,9 @@
 <#
 .SYNOPSIS
-    Rime Auto-Installer (V17 - Surgical Removal of Bopomofo)
-    Safe-swap input methods to avoid empty list issue.
+    Rime Auto-Installer (V18 - 3-Stage Sequential Language Fix)
+    Stage 1: Initialize zh-TW
+    Stage 2: Inject Rime
+    Stage 3: Remove Bopomofo
 #>
 
 # ==========================================
@@ -29,10 +31,7 @@ $DeployerExe   = "$TargetDir\WeaselDeployer.exe"
 $RimeDataDir   = "$TargetDir\data" 
 $RimeUserDir   = "$env:APPDATA\Rime"
 
-# GUID Definitions
-# Weasel (Rime)
 $WeaselGuid    = "{A3F61664-90B7-4EA0-86FA-5056747127C7}{A3F61664-90B7-4EA0-86FA-5056747127C7}"
-# Microsoft Bopomofo (Standard Win10/11 GUID)
 $MsBopomofoGuid = "{B115690A-EA02-48D5-A231-E3578D2FDF80}{B727450D-55D0-4641-8727-2CA8682763F9}"
 
 # ==========================================
@@ -43,7 +42,7 @@ Write-Host "Checking for Weasel Version $TargetVersion..." -ForegroundColor Cyan
 if (-not (Test-Path $TargetDir)) {
     Write-Host "Target folder missing. Initiating Winget installation..."
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-        Write-Error "Winget not found. Please install manually."; Read-Host "Exit..."; Exit
+        Write-Error "Winget not found."; Read-Host "Exit..."; Exit
     }
     try {
         winget install --id Rime.Weasel --version $TargetVersion -h --accept-source-agreements --accept-package-agreements --force
@@ -92,7 +91,7 @@ if (Test-Path $DeployerExe) {
 }
 
 # ==========================================
-# [STEP 4: FIX PERMISSIONS (icacls)]
+# [STEP 4: FIX PERMISSIONS]
 # ==========================================
 Write-Host "Fixing File Permissions..."
 if (Test-Path $RimeUserDir) {
@@ -100,64 +99,84 @@ if (Test-Path $RimeUserDir) {
 }
 
 # ==========================================
-# [STEP 5: FIX LANGUAGE (SURGICAL SWAP)]
+# [STEP 5: FIX LANGUAGE (3-STAGE ROCKET)]
 # ==========================================
-Write-Host "`n[4/4] Sanitizing Language List..." -ForegroundColor Yellow
+Write-Host "`n[4/4] Sanitizing Language List (3-Stage Process)..." -ForegroundColor Yellow
+
+$RimeTip = "0404:$WeaselGuid"
+$BopomofoTip = "0404:$MsBopomofoGuid"
 
 try {
-    $CleanList = @()
-    $CurrentList = Get-WinUserLanguageList
-
-    # 5.1 ENGLISH (Priority 1)
-    $EnglishLang = $CurrentList | Where-Object { $_.LanguageTag -like "en*" } | Select-Object -First 1
-    if (-not $EnglishLang) { $EnglishLang = (New-WinUserLanguageList "en-US")[0] }
-    $CleanList += $EnglishLang
-    Write-Host " - Priority 1: $($EnglishLang.LanguageTag)"
-
-    # 5.2 TRADITIONAL CHINESE (Priority 2)
-    # We reconstruct the object to ensure a clean slate, but we modify it carefully
-    $TwLang = (New-WinUserLanguageList "zh-TW")[0]
+    # --- STAGE A: BASE INITIALIZATION ---
+    # Goal: Ensure System has [English, zh-TW(Default)]
+    Write-Host "Stage A: Initializing Base Languages..."
     
-    $RimeTip = "0404:$WeaselGuid"
-    $BopomofoTip = "0404:$MsBopomofoGuid"
-
-    # A. Add Rime First (Ensure at least one valid IME exists)
-    if ($TwLang.InputMethodTips -notcontains $RimeTip) {
-        $TwLang.InputMethodTips.Add($RimeTip)
-        Write-Host "   -> Added Rime"
-    }
-
-    # B. Remove Microsoft Bopomofo (Surgical Removal)
-    # We check if the list contains the standard Bopomofo GUID and remove it
-    if ($TwLang.InputMethodTips -contains $BopomofoTip) {
-        $TwLang.InputMethodTips.Remove($BopomofoTip)
-        Write-Host "   -> Removed Microsoft Bopomofo"
-    }
+    $List_A = @()
+    # 1. English
+    $Curr = Get-WinUserLanguageList
+    $En = $Curr | Where-Object { $_.LanguageTag -like "en*" } | Select-Object -First 1
+    if (-not $En) { $En = (New-WinUserLanguageList "en-US")[0] }
+    $List_A += $En
     
-    # C. Safety Check: If list is somehow empty (Rime failed to add), Put Bopomofo back
-    if ($TwLang.InputMethodTips.Count -eq 0) {
-        Write-Warning "   -> Warning: Rime addition failed validation. Restoring Bopomofo to prevent error."
-        $TwLang.InputMethodTips.Add($BopomofoTip)
+    # 2. zh-TW (Default Microsoft Bopomofo)
+    $Tw = (New-WinUserLanguageList "zh-TW")[0]
+    $List_A += $Tw
+    
+    Set-WinUserLanguageList $List_A -Force -ErrorAction Stop
+    Write-Host " -> Base initialized."
+
+    # --- STAGE B: INJECT RIME ---
+    # Goal: Add Rime to the existing zh-TW
+    Write-Host "Stage B: Injecting Rime..."
+    
+    # Reload fresh list from system
+    $List_B = Get-WinUserLanguageList
+    $Tw_Target = $List_B | Where-Object { $_.LanguageTag -eq "zh-TW" }
+    
+    if ($Tw_Target) {
+        if ($Tw_Target.InputMethodTips -notcontains $RimeTip) {
+            $Tw_Target.InputMethodTips.Add($RimeTip)
+            Set-WinUserLanguageList $List_B -Force -ErrorAction Stop
+            Write-Host " -> Rime injected successfully."
+        } else {
+            Write-Host " -> Rime already present."
+        }
+    } else {
+        throw "Critical: zh-TW missing after Stage A."
     }
 
-    $CleanList += $TwLang
-    Write-Host " - Priority 2: zh-TW (Sanitized)"
+    # --- STAGE C: REMOVE BOPOMOFO & LOCK UI ---
+    # Goal: Remove MS Bopomofo and Lock UI
+    Write-Host "Stage C: Removing Bopomofo & Locking UI..."
+    
+    # Reload fresh list again
+    $List_C = Get-WinUserLanguageList
+    $Tw_Final = $List_C | Where-Object { $_.LanguageTag -eq "zh-TW" }
+    
+    if ($Tw_Final) {
+        if ($Tw_Final.InputMethodTips -contains $BopomofoTip) {
+            # Only remove if Rime is actually there (Safety)
+            if ($Tw_Final.InputMethodTips -contains $RimeTip) {
+                $Tw_Final.InputMethodTips.Remove($BopomofoTip)
+                Set-WinUserLanguageList $List_C -Force -ErrorAction Stop
+                Write-Host " -> Microsoft Bopomofo removed."
+            } else {
+                Write-Warning " -> Rime not detected. Skipping Bopomofo removal to prevent empty list."
+            }
+        }
+    }
 
-    # 5.3 APPLY LIST
-    Set-WinUserLanguageList $CleanList -Force -ErrorAction Stop
-    Write-Host " - Language list cleaned."
-
-    # 5.4 FORCE UI TO TRADITIONAL CHINESE
+    # Lock UI Language
     Set-WinUILanguageOverride -Language "zh-TW"
-    Write-Host " - Display Language LOCKED to: zh-TW" -ForegroundColor Green
+    Write-Host " -> UI Locked to zh-TW." -ForegroundColor Green
 
 } catch {
-    Write-Error "Language fix failed: $_"
+    Write-Error "Language process failed: $_"
 }
 
 # Final Cleanup
 Stop-Process -Name "WeaselServer" -ErrorAction SilentlyContinue -Force
 
 Write-Host "`nSuccess! Boshiamy is ready." -ForegroundColor Green
-Write-Host "Please Sign Out and Sign In again to fully apply the language settings."
+Write-Host "Please Sign Out and Sign In again to fully apply settings."
 Read-Host "Press Enter to exit..."
