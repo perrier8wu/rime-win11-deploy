@@ -1,26 +1,8 @@
 <#
 .SYNOPSIS
-    Rime Auto-Installer (V9 - Strict Language Whitelist)
+    Rime Auto-Installer (V14 - Winget Return + UI Language Fix)
+    Uses Winget for installation, then enforces Strict Language Policy & Chinese UI.
 #>
-
-# ==========================================
-# [CONFIGURATION AREA]
-# ==========================================
-$ScriptUrl   = "https://perrier8wu.github.io/rime-win11-deploy/install.ps1"
-$ProgDataUrl = "https://github.com/perrier8wu/rime-win11-deploy/raw/main/data.zip"
-$UserDataUrl = "https://github.com/perrier8wu/rime-win11-deploy/raw/main/rime_user_data.zip"
-
-# ==========================================
-# [CONSTANTS]
-# ==========================================
-$TargetVersion = "0.17.4"
-$TargetDir     = "C:\Program Files\Rime\weasel-$TargetVersion"
-$DeployerExe   = "$TargetDir\WeaselDeployer.exe" 
-$RimeDataDir   = "$TargetDir\data" 
-$RimeUserDir   = "$env:APPDATA\Rime"
-
-# Weasel TSF GUID (Double GUID is required for full TSF registration)
-$WeaselGuid    = "{A3F61664-90B7-4EA0-86FA-5056747127C7}{A3F61664-90B7-4EA0-86FA-5056747127C7}"
 
 # ==========================================
 # [AUTO-ELEVATION]
@@ -29,72 +11,131 @@ $CurrentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Pri
 if (-not $CurrentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host "Requesting Administrator privileges..." -ForegroundColor Yellow
     $TempScript = "$env:TEMP\rime_installer_elevated.ps1"
-    try { Invoke-RestMethod -Uri $ScriptUrl -OutFile $TempScript }
-    catch { Write-Error "Download failed. Check URL: $ScriptUrl"; Start-Sleep 5; Exit }
+    try { Invoke-RestMethod -Uri "https://perrier8wu.github.io/rime-win11-deploy/install.ps1" -OutFile $TempScript }
+    catch { Write-Error "Download failed."; Start-Sleep 5; Exit }
     Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$TempScript`"" -Verb RunAs
     Exit
 }
 
 # ==========================================
-# [STEP 1: CHECK & INSTALL VIA WINGET]
+# [CONFIGURATION]
 # ==========================================
-$ErrorActionPreference = "Stop"
+$ProgDataUrl   = "https://github.com/perrier8wu/rime-win11-deploy/raw/main/data.zip"
+$UserDataUrl   = "https://github.com/perrier8wu/rime-win11-deploy/raw/main/rime_user_data.zip"
+
+$TargetVersion = "0.17.4"
+$TargetDir     = "C:\Program Files\Rime\weasel-$TargetVersion"
+$DeployerExe   = "$TargetDir\WeaselDeployer.exe" 
+$RimeDataDir   = "$TargetDir\data" 
+$RimeUserDir   = "$env:APPDATA\Rime"
+$WeaselGuid    = "{A3F61664-90B7-4EA0-86FA-5056747127C7}{A3F61664-90B7-4EA0-86FA-5056747127C7}"
+
+# ==========================================
+# [STEP 1: INSTALL VIA WINGET]
+# ==========================================
 Write-Host "Checking for Weasel Version $TargetVersion..." -ForegroundColor Cyan
 
 if (-not (Test-Path $TargetDir)) {
-    Write-Host "Target folder missing. Invoking Winget..."
+    Write-Host "Target folder missing. Initiating Winget installation..."
+    
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-        Write-Error "Winget not found."; Read-Host "Press Enter to exit..."; Exit
+        Write-Error "Winget not found. Please install manually."
+        Read-Host "Press Enter to exit..."; Exit
     }
 
     try {
+        # Force install specific version
         winget install --id Rime.Weasel --version $TargetVersion -h --accept-source-agreements --accept-package-agreements --force
     } catch {
-        Write-Error "Installation failed: $_"; Read-Host "Press Enter to exit..."; Exit
+        Write-Error "Winget failed: $_"; Read-Host "Exit..."; Exit
     }
 
+    # Wait loop for file system (Winget is async)
     Write-Host "Waiting for installer..." -NoNewline
     $Retries = 0; $MaxRetries = 30
     do { Start-Sleep -Seconds 1; Write-Host "." -NoNewline; $Retries++; $Exists = Test-Path $DeployerExe } until ($Exists -or ($Retries -ge $MaxRetries))
     Write-Host "" 
 
     if (-not (Test-Path $DeployerExe)) { throw "Timed out waiting for '$DeployerExe'." }
-    Write-Host "Weasel verified." -ForegroundColor Green
+    Write-Host "Weasel installed." -ForegroundColor Green
 } else {
-    Write-Host "Weasel $TargetVersion found." -ForegroundColor Green
+    Write-Host "Already installed." -ForegroundColor Green
 }
 
 # ==========================================
-# [STEP 2: INSTALL SYSTEM DATA]
+# [STEP 2: INSTALL CONFIG DATA]
 # ==========================================
-Write-Host "`n[2/4] Installing System Data..."
+Write-Host "`n[2/4] Installing Configuration Data..."
+
+# System Data
 $TempProgZip = "$env:TEMP\rime_prog_data.zip"
 try {
     Invoke-RestMethod -Uri $ProgDataUrl -OutFile $TempProgZip
     if (!(Test-Path $RimeDataDir)) { New-Item -ItemType Directory -Path $RimeDataDir -Force | Out-Null }
     Expand-Archive -Path $TempProgZip -DestinationPath $RimeDataDir -Force
-    Write-Host "System Data installed to: $RimeDataDir"
-} catch {
-    Write-Error "SysData Fail: $_"; Read-Host "Exit..."; Exit
-}
+} catch { Write-Warning "SysData Fail: $_" }
 
-# ==========================================
-# [STEP 3: INSTALL USER DATA]
-# ==========================================
-Write-Host "`n[3/4] Installing User Data..."
+# User Data
 $TempUserZip = "$env:TEMP\rime_user_data.zip"
 try {
     Invoke-RestMethod -Uri $UserDataUrl -OutFile $TempUserZip
     Expand-Archive -Path $TempUserZip -DestinationPath $RimeUserDir -Force
-    Write-Host "User Data installed."
-} catch {
-    Write-Error "UserData Fail: $_"
+} catch { Write-Warning "UserData Fail: $_" }
+
+# Clean Temp
+Remove-Item $TempProgZip -ErrorAction SilentlyContinue
+Remove-Item $TempUserZip -ErrorAction SilentlyContinue
+Remove-Item "$env:TEMP\rime_installer_elevated.ps1" -ErrorAction SilentlyContinue
+
+# ==========================================
+# [STEP 3: DEPLOY & PROCESS CLEANUP]
+# ==========================================
+Write-Host "`n[3/4] Compiling Schemas..."
+Stop-Process -Name "WeaselServer" -ErrorAction SilentlyContinue
+Stop-Process -Name "WeaselDeployer" -ErrorAction SilentlyContinue
+
+if (Test-Path $DeployerExe) {
+    Start-Process $DeployerExe -ArgumentList "/deploy" -Wait
+    # Critical: Kill admin process so user process can spawn naturally
+    Stop-Process -Name "WeaselServer" -ErrorAction SilentlyContinue -Force
 }
 
 # ==========================================
-# [STEP 4: FIX PERMISSIONS & DEPLOY]
+# [STEP 4: FIX LANGUAGE & RESTORE CHINESE UI]
 # ==========================================
-Write-Host "`n[4/4] Finalizing & Deploying..."
+Write-Host "`n[4/4] Sanitizing Language & Restoring Traditional Chinese UI..." -ForegroundColor Yellow
+
+try {
+    $CleanList = @()
+    $CurrentList = Get-WinUserLanguageList
+
+    # 4.1 ENGLISH (Priority 1 for Input)
+    $EnglishLang = $CurrentList | Where-Object { $_.LanguageTag -like "en*" } | Select-Object -First 1
+    if (-not $EnglishLang) { $EnglishLang = (New-WinUserLanguageList "en-US")[0] }
+    $CleanList += $EnglishLang
+    Write-Host " - Input Priority 1: $($EnglishLang.LanguageTag)"
+
+    # 4.2 TRADITIONAL CHINESE (Priority 2)
+    $TwLang = (New-WinUserLanguageList "zh-TW")[0]
+    $RimeTip = "0404:$WeaselGuid"
+    
+    if ($TwLang.InputMethodTips -notcontains $RimeTip) {
+        $TwLang.InputMethodTips.Add($RimeTip)
+    }
+    $CleanList += $TwLang
+    Write-Host " - Input Priority 2: zh-TW (with Rime)"
+
+    # 4.3 APPLY LIST (Simplified Chinese removed)
+    Set-WinUserLanguageList $CleanList -Force -ErrorAction Stop
+    Write-Host " - Language list cleaned."
+
+    # 4.4 *** FORCE UI TO TRADITIONAL CHINESE ***
+    Set-WinUILanguageOverride -Language "zh-TW"
+    Write-Host " - Display Language LOCKED to: Traditional Chinese (zh-TW)" -ForegroundColor Green
+
+} catch {
+    Write-Error "Language fix failed: $_"
+}
 
 # Permission Fix
 try {
@@ -102,76 +143,8 @@ try {
     $Ar = New-Object System.Security.AccessControl.FileSystemAccessRule("Users", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")
     $Acl.SetAccessRule($Ar)
     Set-Acl $RimeUserDir $Acl
-} catch { Write-Warning "Perms fix skipped." }
-
-# Cleanup Temp
-Remove-Item $TempProgZip -ErrorAction SilentlyContinue
-Remove-Item $TempUserZip -ErrorAction SilentlyContinue
-Remove-Item "$env:TEMP\rime_installer_elevated.ps1" -ErrorAction SilentlyContinue
-
-# Kill Processes
-Stop-Process -Name "WeaselServer" -ErrorAction SilentlyContinue
-Stop-Process -Name "WeaselDeployer" -ErrorAction SilentlyContinue
-
-# Execute Deploy
-if (Test-Path $DeployerExe) {
-    Write-Host "Compiling schemas..."
-    Start-Process $DeployerExe -ArgumentList "/deploy" -Wait
-    Stop-Process -Name "WeaselServer" -ErrorAction SilentlyContinue -Force
-}
-
-# ==========================================
-# [STEP 5: STRICT LANGUAGE RESET (V9)]
-# ==========================================
-Write-Host "`n[5/5] Enforcing Strict Language Policy..." -ForegroundColor Yellow
-Write-Host "Policy: [English + Traditional Chinese (Rime)] ONLY."
-
-try {
-    # 1. Define the CLEAN List (Empty initially)
-    $CleanList = New-Object System.Collections.Generic.List[Microsoft.InternationalSettings.Commands.WinUserLanguage]
-
-    # 2. Find an existing English language to keep (Prefer US, or whatever user has)
-    $CurrentList = Get-WinUserLanguageList
-    $EnglishLang = $CurrentList | Where-Object { $_.LanguageTag -like "en*" } | Select-Object -First 1
-    
-    if (-not $EnglishLang) {
-        Write-Host " - No English found, adding en-US default."
-        $EnglishLang = New-WinUserLanguageList "en-US"
-        $EnglishLang = $EnglishLang[0]
-    } else {
-        Write-Host " - Keeping English: $($EnglishLang.LanguageTag)"
-    }
-    $CleanList.Add($EnglishLang)
-
-    # 3. Create/Prepare Traditional Chinese (zh-TW)
-    # We create a fresh object to ensure no junk data from previous states
-    $TwLangList = New-WinUserLanguageList "zh-TW"
-    $TwLang = $TwLangList[0]
-    
-    # 4. Inject Rime into zh-TW
-    $RimeTip = "0404:$WeaselGuid"
-    Write-Host " - Injecting Rime into zh-TW..."
-    
-    # Check if MS Bopomofo is there, we keep it as backup or just add Rime? 
-    # Usually New-WinUserLanguageList adds MS Bopomofo by default. We append Rime.
-    if ($TwLang.InputMethodTips -notcontains $RimeTip) {
-        $TwLang.InputMethodTips.Add($RimeTip)
-    }
-    
-    $CleanList.Add($TwLang)
-
-    # 5. EXECUTE THE OVERWRITE
-    # This command replaces the ENTIRE system list with our CleanList.
-    # Anything not in CleanList (like zh-CN) is effectively deleted.
-    Set-WinUserLanguageList $CleanList -Force
-    
-    Write-Host "Language list successfully reset!" -ForegroundColor Green
-
-} catch {
-    Write-Error "Language enforcement failed: $_"
-    Write-Host "Please manually remove Simplified Chinese in Settings if it persists."
-}
+} catch { }
 
 Write-Host "`nSuccess! Boshiamy is ready." -ForegroundColor Green
+Write-Host "If UI is incorrect, please Sign Out and Sign In again."
 Read-Host "Press Enter to exit..."
-
