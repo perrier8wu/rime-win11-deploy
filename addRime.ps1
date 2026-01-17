@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
-    addRime.ps1 - Rime Injection Diagnostic Tool
-    Focus: Add Rime to zh-TW and Remove Microsoft Bopomofo.
+    addRime.ps1 (V2) - Working Directory Fix
+    Fixes the "Silent Crash" of WeaselDeployer by setting the correct execution context.
 #>
 
 # ==========================================
@@ -17,115 +17,99 @@ if (-not $CurrentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Adm
 }
 
 # ==========================================
-# [DIAGNOSTIC CONFIG]
+# [CONFIG]
 # ==========================================
-$WeaselPath     = "C:\Program Files\Rime\weasel-0.17.4\WeaselDeployer.exe"
-# Standard Weasel CLSID (The ID used in Registry)
+# Target the specific version folder you confirmed exists
+$WeaselDir      = "C:\Program Files\Rime\weasel-0.17.4"
+$WeaselExe      = "$WeaselDir\WeaselDeployer.exe"
 $WeaselClsid    = "{A3F61664-90B7-4EA0-86FA-5056747127C7}"
-# Microsoft Bopomofo GUID (To remove)
 $BopomofoGuid   = "{B115690A-EA02-48D5-A231-E3578D2FDF80}{B727450D-55D0-4641-8727-2CA8682763F9}"
 
 # ==========================================
-# [STEP 1: REGISTRY CHECK]
+# [STEP 1: FORCE REGISTRATION WITH CORRECT PATH]
 # ==========================================
-Write-Host "--- STEP 1: Checking System Registry ---" -ForegroundColor Cyan
+Write-Host "--- STEP 1: Verifying Registry ---" -ForegroundColor Cyan
 $RegPath = "HKLM:\SOFTWARE\Microsoft\CTF\TIP\$WeaselClsid"
 
-if (Test-Path $RegPath) {
-    Write-Host "[OK] Weasel is registered in System Registry." -ForegroundColor Green
-    # Get the LanguageProfile (to confirm it supports 0x0404 zh-TW)
-    $ProfilePath = "$RegPath\LanguageProfile\0x00000404\$WeaselClsid"
-    if (Test-Path $ProfilePath) {
-        Write-Host "[OK] Weasel has a valid Traditional Chinese (0404) profile." -ForegroundColor Green
+if (-not (Test-Path $RegPath)) {
+    Write-Host "Registry Key missing. Attempting to fix..." -ForegroundColor Yellow
+    
+    if (Test-Path $WeaselExe) {
+        Write-Host "Executing WeaselDeployer /install..."
+        Write-Host "WorkDir: $WeaselDir"
+        
+        # *** CRITICAL FIX: Set WorkingDirectory so it finds DLLs ***
+        $Proc = Start-Process -FilePath $WeaselExe -ArgumentList "/install" -WorkingDirectory $WeaselDir -PassThru -Wait
+        
+        Write-Host "Process Exit Code: $($Proc.ExitCode)"
+        
+        # Wait for Windows Registry to flush
+        Write-Host "Waiting 3 seconds for Registry update..."
+        Start-Sleep -Seconds 3
+        
+        if (Test-Path $RegPath) {
+            Write-Host "[SUCCESS] Weasel is now registered!" -ForegroundColor Green
+        } else {
+            Write-Error "[FATAL] Registration failed again. Exit Code: $($Proc.ExitCode)"
+            Write-Host "Possibility: Missing VC++ Runtime?"
+            Pause; Exit
+        }
     } else {
-        Write-Host "[WARNING] Weasel Registry exists but 0404 Profile is missing." -ForegroundColor Red
-        Write-Host "Attempting to fix by running '/install'..."
-        Start-Process $WeaselPath -ArgumentList "/install" -Wait
+        Write-Error "Deployer not found at: $WeaselExe"
+        Pause; Exit
     }
 } else {
-    Write-Host "[FAIL] Weasel is NOT in the Registry." -ForegroundColor Red
-    if (Test-Path $WeaselPath) {
-        Write-Host "Running WeaselDeployer /install to register it..."
-        Start-Process $WeaselPath -ArgumentList "/install" -Wait
-        Start-Sleep -Seconds 2
-        if (Test-Path $RegPath) { Write-Host "[FIXED] Registration successful." -ForegroundColor Green }
-        else { Write-Error "Failed to register Weasel. Windows will REFUSE to add it."; Pause; Exit }
-    } else {
-        Write-Error "WeaselDeployer not found at $WeaselPath"; Pause; Exit
-    }
+    Write-Host "[OK] Registry Key already exists." -ForegroundColor Green
 }
 
 # ==========================================
-# [STEP 2: CONSTRUCT TIP STRING]
+# [STEP 2: ADD RIME & REMOVE BOPOMOFO]
 # ==========================================
-Write-Host "`n--- STEP 2: Constructing Input Method String ---" -ForegroundColor Cyan
-# TSF TIP Format: LangID:CLSID{ProfileGUID}
-# For Weasel, CLSID and ProfileGUID are usually the same.
-$RimeTip = "0404:$WeaselClsid$WeaselClsid"
-Write-Host "Target String: $RimeTip"
-
-# ==========================================
-# [STEP 3: MODIFY LANGUAGE LIST]
-# ==========================================
-Write-Host "`n--- STEP 3: Modifying Language List ---" -ForegroundColor Cyan
+Write-Host "`n--- STEP 2: Modifying Language List ---" -ForegroundColor Cyan
 
 try {
-    # 1. Get Current List
+    $RimeTip = "0404:$WeaselClsid$WeaselClsid"
+    $BopomofoTip = "0404:$BopomofoGuid"
+    
     $CurrentList = Get-WinUserLanguageList
-    $TwLang = $null
-
-    # 2. Find or Create zh-TW
+    
+    # Check zh-TW
     $TwLang = $CurrentList | Where-Object { $_.LanguageTag -eq "zh-TW" }
     
     if (-not $TwLang) {
-        Write-Host "zh-TW not found. Creating new..."
+        Write-Host "Creating zh-TW..."
         $TwLang = (New-WinUserLanguageList "zh-TW")[0]
         $CurrentList.Add($TwLang)
-    } else {
-        Write-Host "Found existing zh-TW."
     }
 
-    # 3. ADD RIME
+    # Add Rime
     if ($TwLang.InputMethodTips -notcontains $RimeTip) {
-        Write-Host "Adding Rime..."
+        Write-Host "Injecting Rime..."
         $TwLang.InputMethodTips.Add($RimeTip)
     } else {
-        Write-Host "Rime is already in the list object."
+        Write-Host "Rime already in list."
     }
 
-    # 4. REMOVE BOPOMOFO
-    $BopomofoTip = "0404:$BopomofoGuid"
+    # Remove Bopomofo
     if ($TwLang.InputMethodTips -contains $BopomofoTip) {
         Write-Host "Removing Microsoft Bopomofo..."
         $TwLang.InputMethodTips.Remove($BopomofoTip)
-    } else {
-        Write-Host "Microsoft Bopomofo not found in list."
     }
 
-    # 5. VERIFY BEFORE APPLY
-    Write-Host "`nCurrent Inputs in zh-TW object:" -ForegroundColor Gray
-    $TwLang.InputMethodTips | ForEach-Object { Write-Host " - $_" }
-
-    if ($TwLang.InputMethodTips.Count -eq 0) {
-        Write-Error "ABORTING: The list is empty! Windows will reject this."
-        Pause; Exit
-    }
-
-    # 6. APPLY
-    Write-Host "`nApplying settings to Windows..." -ForegroundColor Yellow
+    # Apply
+    Write-Host "Applying settings..."
     Set-WinUserLanguageList $CurrentList -Force -ErrorAction Stop
+    Write-Host "[SUCCESS] Language list updated." -ForegroundColor Green
     
-    Write-Host "[SUCCESS] Settings applied." -ForegroundColor Green
-
-    # 7. FINAL VERIFICATION
+    # Verify
     Start-Sleep -Seconds 1
-    $FinalList = Get-WinUserLanguageList
-    $FinalTw = $FinalList | Where-Object { $_.LanguageTag -eq "zh-TW" }
-    if ($FinalTw.InputMethodTips -contains $RimeTip) {
-        Write-Host "VERIFIED: Rime is effectively active!" -ForegroundColor Green
+    $VerifyList = Get-WinUserLanguageList
+    $VerifyTw = $VerifyList | Where-Object { $_.LanguageTag -eq "zh-TW" }
+    
+    if ($VerifyTw.InputMethodTips -contains $RimeTip) {
+        Write-Host "VERIFIED: Rime is active!" -ForegroundColor Green
     } else {
-        Write-Host "FAILURE: Windows silently discarded Rime." -ForegroundColor Red
-        Write-Host "This usually means the GUID $WeaselClsid is considered invalid by TSF."
+        Write-Host "WARNING: Rime failed to stick." -ForegroundColor Red
     }
 
 } catch {
@@ -137,4 +121,5 @@ if (Test-Path "$env:TEMP\addrime_elevated.ps1") { Remove-Item "$env:TEMP\addrime
 
 Write-Host "`nDone."
 Read-Host "Press Enter to exit..."
+#V2
 
