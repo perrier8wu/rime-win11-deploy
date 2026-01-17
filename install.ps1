@@ -1,7 +1,8 @@
 <#
 .SYNOPSIS
-    Rime Auto-Installer (V14 - Winget Return + UI Language Fix)
-    Uses Winget for installation, then enforces Strict Language Policy & Chinese UI.
+    Rime Auto-Installer (V15 - Permission Inheritance Fix)
+    Fixes the "Manual Redeploy" requirement by enforcing User permissions on compiled files.
+2601180229
 #>
 
 # ==========================================
@@ -44,13 +45,11 @@ if (-not (Test-Path $TargetDir)) {
     }
 
     try {
-        # Force install specific version
         winget install --id Rime.Weasel --version $TargetVersion -h --accept-source-agreements --accept-package-agreements --force
     } catch {
         Write-Error "Winget failed: $_"; Read-Host "Exit..."; Exit
     }
 
-    # Wait loop for file system (Winget is async)
     Write-Host "Waiting for installer..." -NoNewline
     $Retries = 0; $MaxRetries = 30
     do { Start-Sleep -Seconds 1; Write-Host "." -NoNewline; $Retries++; $Exists = Test-Path $DeployerExe } until ($Exists -or ($Retries -ge $MaxRetries))
@@ -88,20 +87,32 @@ Remove-Item $TempUserZip -ErrorAction SilentlyContinue
 Remove-Item "$env:TEMP\rime_installer_elevated.ps1" -ErrorAction SilentlyContinue
 
 # ==========================================
-# [STEP 3: DEPLOY & PROCESS CLEANUP]
+# [STEP 3: DEPLOY]
 # ==========================================
 Write-Host "`n[3/4] Compiling Schemas..."
 Stop-Process -Name "WeaselServer" -ErrorAction SilentlyContinue
 Stop-Process -Name "WeaselDeployer" -ErrorAction SilentlyContinue
 
 if (Test-Path $DeployerExe) {
+    # Run the deployment (This creates Admin-owned .bin files)
     Start-Process $DeployerExe -ArgumentList "/deploy" -Wait
-    # Critical: Kill admin process so user process can spawn naturally
-    Stop-Process -Name "WeaselServer" -ErrorAction SilentlyContinue -Force
 }
 
 # ==========================================
-# [STEP 4: FIX LANGUAGE & RESTORE CHINESE UI]
+# [STEP 4: FIX PERMISSIONS (THE FIX)]
+# ==========================================
+# This step is critical. We use icacls to force 'Users' group to have Full Control
+# over everything the Admin script just created.
+Write-Host "Fixing File Permissions..."
+if (Test-Path $RimeUserDir) {
+    # /grant Users:(OI)(CI)F  -> Grant Users group ObjectInherit, ContainerInherit, FullControl
+    # /T                      -> Recursive
+    # /Q                      -> Quiet
+    Start-Process icacls -ArgumentList "`"$RimeUserDir`" /grant Users:(OI)(CI)F /T /Q" -NoNewWindow -Wait
+}
+
+# ==========================================
+# [STEP 5: FIX LANGUAGE & RESTORE CHINESE UI]
 # ==========================================
 Write-Host "`n[4/4] Sanitizing Language & Restoring Traditional Chinese UI..." -ForegroundColor Yellow
 
@@ -109,13 +120,13 @@ try {
     $CleanList = @()
     $CurrentList = Get-WinUserLanguageList
 
-    # 4.1 ENGLISH (Priority 1 for Input)
+    # 5.1 ENGLISH (Priority 1)
     $EnglishLang = $CurrentList | Where-Object { $_.LanguageTag -like "en*" } | Select-Object -First 1
     if (-not $EnglishLang) { $EnglishLang = (New-WinUserLanguageList "en-US")[0] }
     $CleanList += $EnglishLang
     Write-Host " - Input Priority 1: $($EnglishLang.LanguageTag)"
 
-    # 4.2 TRADITIONAL CHINESE (Priority 2)
+    # 5.2 TRADITIONAL CHINESE (Priority 2)
     $TwLang = (New-WinUserLanguageList "zh-TW")[0]
     $RimeTip = "0404:$WeaselGuid"
     
@@ -125,11 +136,11 @@ try {
     $CleanList += $TwLang
     Write-Host " - Input Priority 2: zh-TW (with Rime)"
 
-    # 4.3 APPLY LIST (Simplified Chinese removed)
+    # 5.3 APPLY
     Set-WinUserLanguageList $CleanList -Force -ErrorAction Stop
     Write-Host " - Language list cleaned."
 
-    # 4.4 *** FORCE UI TO TRADITIONAL CHINESE ***
+    # 5.4 FORCE UI TO TRADITIONAL CHINESE
     Set-WinUILanguageOverride -Language "zh-TW"
     Write-Host " - Display Language LOCKED to: Traditional Chinese (zh-TW)" -ForegroundColor Green
 
@@ -137,14 +148,10 @@ try {
     Write-Error "Language fix failed: $_"
 }
 
-# Permission Fix
-try {
-    $Acl = Get-Acl $RimeUserDir
-    $Ar = New-Object System.Security.AccessControl.FileSystemAccessRule("Users", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")
-    $Acl.SetAccessRule($Ar)
-    Set-Acl $RimeUserDir $Acl
-} catch { }
+# Final Cleanup of Admin Processes
+Stop-Process -Name "WeaselServer" -ErrorAction SilentlyContinue -Force
 
 Write-Host "`nSuccess! Boshiamy is ready." -ForegroundColor Green
-Write-Host "If UI is incorrect, please Sign Out and Sign In again."
+Write-Host "Please Sign Out and Sign In again to fully apply the language settings."
 Read-Host "Press Enter to exit..."
+
