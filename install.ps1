@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
-    Rime Auto-Installer (Winget + Wait-Loop Logic)
-2601171838
+    Rime Auto-Installer (V6 - Correct Data Path inside Version Folder)
+2601171846
 #>
 
 # ==========================================
@@ -15,10 +15,15 @@ $UserDataUrl = "https://github.com/perrier8wu/rime-win11-deploy/raw/main/rime_us
 # [CONSTANTS]
 # ==========================================
 $TargetVersion = "0.17.4"
-# HARDCODED PATH as confirmed by you
+# The folder where Winget installs files
 $TargetDir     = "C:\Program Files\Rime\weasel-$TargetVersion"
-$DeployerExe   = "$TargetDir\weasel-deployer.exe"
-$RimeDataDir   = "C:\Program Files\Rime\data"
+
+# FIXED: Deployer filename (WeaselDeployer.exe)
+$DeployerExe   = "$TargetDir\WeaselDeployer.exe" 
+
+# FIXED: Data directory is now INSIDE the version folder
+$RimeDataDir   = "$TargetDir\data" 
+
 $RimeUserDir   = "$env:APPDATA\Rime"
 
 # ==========================================
@@ -40,8 +45,9 @@ if (-not $CurrentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Adm
 $ErrorActionPreference = "Stop"
 Write-Host "Checking for Weasel Version $TargetVersion..." -ForegroundColor Cyan
 
+# Check if the specific version folder exists
 if (-not (Test-Path $TargetDir)) {
-    Write-Warning "Folder '$TargetDir' not found. Installing via Winget..."
+    Write-Host "Target folder '$TargetDir' missing. Invoking Winget..."
     
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
         Write-Error "Winget not found. Please install manually."
@@ -49,32 +55,27 @@ if (-not (Test-Path $TargetDir)) {
     }
 
     try {
-        Write-Host "Executing Winget Install..."
         winget install --id Rime.Weasel --version $TargetVersion -h --accept-source-agreements --accept-package-agreements --force
-        
-        # --- NEW: WAIT LOOP LOGIC ---
-        Write-Host "Waiting for installer to create directories..." -NoNewline
-        $Retries = 0
-        $MaxRetries = 30 # Wait up to 30 seconds
-        
-        do {
-            Start-Sleep -Seconds 1
-            Write-Host "." -NoNewline
-            $Retries++
-            $Exists = Test-Path $TargetDir
-        } until ($Exists -or ($Retries -ge $MaxRetries))
-        
-        Write-Host "" # New line
+    } catch {
+        Write-Error "Installation failed: $_"; Read-Host "Press Enter to exit..."; Exit
+    }
 
-        if (-not (Test-Path $TargetDir)) {
-            throw "Timed out waiting for '$TargetDir' to be created."
-        }
-        Write-Host "Installation Verified at: $TargetDir" -ForegroundColor Green
+    # Wait loop for filesystem
+    Write-Host "Waiting for installer to finish..." -NoNewline
+    $Retries = 0
+    $MaxRetries = 30
+    do {
+        Start-Sleep -Seconds 1
+        Write-Host "." -NoNewline
+        $Retries++
+        $Exists = Test-Path $DeployerExe
+    } until ($Exists -or ($Retries -ge $MaxRetries))
+    Write-Host "" 
+
+    if (-not (Test-Path $DeployerExe)) {
+        throw "Timed out waiting for '$DeployerExe'. Please check installation."
     }
-    catch {
-        Write-Error "Installation failed. Details: $_"
-        Read-Host "Press Enter to exit..."; Exit
-    }
+    Write-Host "Weasel verified at: $DeployerExe" -ForegroundColor Green
 } else {
     Write-Host "Weasel $TargetVersion is already installed." -ForegroundColor Green
 }
@@ -84,12 +85,17 @@ if (-not (Test-Path $TargetDir)) {
 # ==========================================
 Write-Host "`n[2/4] Installing System Data..."
 Write-Host "Target: $RimeDataDir"
-
 $TempProgZip = "$env:TEMP\rime_prog_data.zip"
 
 try {
     Invoke-RestMethod -Uri $ProgDataUrl -OutFile $TempProgZip
-    if (!(Test-Path $RimeDataDir)) { New-Item -ItemType Directory -Path $RimeDataDir -Force | Out-Null }
+    
+    # Ensure the 'data' folder inside weasel-0.17.4 exists
+    if (!(Test-Path $RimeDataDir)) { 
+        New-Item -ItemType Directory -Path $RimeDataDir -Force | Out-Null 
+    }
+    
+    # Unzip into weasel-0.17.4\data
     Expand-Archive -Path $TempProgZip -DestinationPath $RimeDataDir -Force
     Write-Host "System Data installed."
 } catch {
@@ -102,7 +108,6 @@ try {
 # ==========================================
 Write-Host "`n[3/4] Installing User Data..."
 Write-Host "Target: $RimeUserDir"
-
 $TempUserZip = "$env:TEMP\rime_user_data.zip"
 
 try {
@@ -130,7 +135,7 @@ if (Test-Path $DeployerExe) {
     Start-Process $DeployerExe -ArgumentList "/deploy" -Wait
     Write-Host "`nSuccess! Boshiamy installation complete." -ForegroundColor Green
 } else {
-    Write-Warning "Deployer executable not found at: $DeployerExe"
+    Write-Error "Deployer executable missing at the last step."
 }
 
 Read-Host "Press Enter to exit..."
