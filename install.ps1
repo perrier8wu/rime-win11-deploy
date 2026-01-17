@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
-    Rime Auto-Installer (V7 - Permission Fix & Process Cleanup)
+    Rime Auto-Installer (V8 - Fix Simplified Chinese Issue)
+2601180109
 #>
 
 # ==========================================
@@ -16,9 +17,11 @@ $UserDataUrl = "https://github.com/perrier8wu/rime-win11-deploy/raw/main/rime_us
 $TargetVersion = "0.17.4"
 $TargetDir     = "C:\Program Files\Rime\weasel-$TargetVersion"
 $DeployerExe   = "$TargetDir\WeaselDeployer.exe" 
-# Data path inside version folder
 $RimeDataDir   = "$TargetDir\data" 
 $RimeUserDir   = "$env:APPDATA\Rime"
+
+# Weasel TSF GUID (Standard)
+$WeaselGuid    = "{A3F61664-90B7-4EA0-86FA-5056747127C7}{A3F61664-90B7-4EA0-86FA-5056747127C7}"
 
 # ==========================================
 # [AUTO-ELEVATION]
@@ -92,45 +95,89 @@ try {
 # ==========================================
 # [STEP 4: FIX PERMISSIONS & DEPLOY]
 # ==========================================
-Write-Host "`n[4/4] Finalizing..."
+Write-Host "`n[4/4] Finalizing & Deploying..."
 
-# 4.1 Permission Fix (Prevent Admin ownership lock-out)
-Write-Host "Fixing User Data permissions..."
+# Permission Fix
 try {
-    # Grant 'Users' group Full Control to the AppData\Rime folder
     $Acl = Get-Acl $RimeUserDir
     $Ar = New-Object System.Security.AccessControl.FileSystemAccessRule("Users", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")
     $Acl.SetAccessRule($Ar)
     Set-Acl $RimeUserDir $Acl
-} catch {
-    Write-Warning "Could not explicitly set permissions. Usually this is fine."
-}
+} catch { Write-Warning "Perms fix skipped." }
 
-# 4.2 Cleanup Temp
+# Cleanup Temp
 Remove-Item $TempProgZip -ErrorAction SilentlyContinue
 Remove-Item $TempUserZip -ErrorAction SilentlyContinue
 Remove-Item "$env:TEMP\rime_installer_elevated.ps1" -ErrorAction SilentlyContinue
 
-# 4.3 Kill Processes BEFORE Deploy
+# Kill Processes
 Stop-Process -Name "WeaselServer" -ErrorAction SilentlyContinue
 Stop-Process -Name "WeaselDeployer" -ErrorAction SilentlyContinue
 
-# 4.4 Execute Deploy (Admin Mode - compiles schemas)
+# Execute Deploy
 if (Test-Path $DeployerExe) {
-    Write-Host "Compiling schemas (Deploy)..."
+    Write-Host "Compiling schemas..."
     Start-Process $DeployerExe -ArgumentList "/deploy" -Wait
-    
-    # --- CRITICAL FIX ---
-    # 4.5 KILL THE ADMIN SERVER
-    # The deployer likely started WeaselServer as Admin. We MUST kill it.
-    # This allows the User's desktop to start a fresh User-Level process automatically.
-    Write-Host "Resetting Server process..."
     Stop-Process -Name "WeaselServer" -ErrorAction SilentlyContinue -Force
-    
-    Write-Host "`nSuccess! Boshiamy is ready." -ForegroundColor Green
-    Write-Host "You can switch to Rime input method immediately."
-} else {
-    Write-Error "Deployer missing."
 }
 
+# ==========================================
+# [STEP 5: LANGUAGE CLEANUP (NEW!)]
+# ==========================================
+Write-Host "`n[5/5] Sanitizing Language List (Removing Simplified Chinese)..." -ForegroundColor Yellow
+
+try {
+    # 1. Get current list
+    $OldList = Get-WinUserLanguageList
+    $NewList = New-Object System.Collections.Generic.List[Microsoft.InternationalSettings.Commands.WinUserLanguage]
+    
+    # 2. Ensure zh-TW exists in our new plan
+    $HasTW = $false
+    
+    # 3. Filter the list
+    foreach ($Lang in $OldList) {
+        # SKIP Simplified Chinese (zh-CN)
+        if ($Lang.LanguageTag -eq "zh-CN") {
+            Write-Host " - Removing Simplified Chinese (zh-CN)..." -ForegroundColor Red
+            continue 
+        }
+        
+        # Track if we have TW
+        if ($Lang.LanguageTag -eq "zh-TW") { $HasTW = $true }
+        
+        $NewList.Add($Lang)
+    }
+
+    # 4. If TW is missing (rare, but possible), add it
+    if (-not $HasTW) {
+        Write-Host " - Adding Traditional Chinese (zh-TW)..."
+        $TwLang = New-WinUserLanguageList "zh-TW"
+        $NewList.Add($TwLang[0])
+    }
+    
+    # 5. FORCE Rime into zh-TW Input Methods
+    # We iterate through the NewList to find zh-TW and inject the IME
+    foreach ($Lang in $NewList) {
+        if ($Lang.LanguageTag -eq "zh-TW") {
+            # Construct the TSF TIP string for Traditional Chinese (0404)
+            # Format: 0404:{GUID}{GUID}
+            $RimeTip = "0404:$WeaselGuid"
+            
+            if ($Lang.InputMethodTips -notcontains $RimeTip) {
+                Write-Host " - Injecting Rime into zh-TW..."
+                $Lang.InputMethodTips.Add($RimeTip)
+            }
+        }
+    }
+
+    # 6. Apply the clean list
+    Set-WinUserLanguageList $NewList -Force
+    Write-Host "Language list fixed: English + Traditional Chinese Only." -ForegroundColor Green
+
+} catch {
+    Write-Warning "Language cleanup encountered an error: $_"
+    Write-Warning "You may need to remove Simplified Chinese manually in Settings."
+}
+
+Write-Host "`nSuccess! Boshiamy is ready." -ForegroundColor Green
 Read-Host "Press Enter to exit..."
