@@ -1,7 +1,6 @@
 <#
 .SYNOPSIS
-    Rime Auto-Installer (V6 - Correct Data Path inside Version Folder)
-2601171846
+    Rime Auto-Installer (V7 - Permission Fix & Process Cleanup)
 #>
 
 # ==========================================
@@ -15,15 +14,10 @@ $UserDataUrl = "https://github.com/perrier8wu/rime-win11-deploy/raw/main/rime_us
 # [CONSTANTS]
 # ==========================================
 $TargetVersion = "0.17.4"
-# The folder where Winget installs files
 $TargetDir     = "C:\Program Files\Rime\weasel-$TargetVersion"
-
-# FIXED: Deployer filename (WeaselDeployer.exe)
 $DeployerExe   = "$TargetDir\WeaselDeployer.exe" 
-
-# FIXED: Data directory is now INSIDE the version folder
+# Data path inside version folder
 $RimeDataDir   = "$TargetDir\data" 
-
 $RimeUserDir   = "$env:APPDATA\Rime"
 
 # ==========================================
@@ -45,13 +39,10 @@ if (-not $CurrentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Adm
 $ErrorActionPreference = "Stop"
 Write-Host "Checking for Weasel Version $TargetVersion..." -ForegroundColor Cyan
 
-# Check if the specific version folder exists
 if (-not (Test-Path $TargetDir)) {
-    Write-Host "Target folder '$TargetDir' missing. Invoking Winget..."
-    
+    Write-Host "Target folder missing. Invoking Winget..."
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-        Write-Error "Winget not found. Please install manually."
-        Read-Host "Press Enter to exit..."; Exit
+        Write-Error "Winget not found."; Read-Host "Press Enter to exit..."; Exit
     }
 
     try {
@@ -60,82 +51,86 @@ if (-not (Test-Path $TargetDir)) {
         Write-Error "Installation failed: $_"; Read-Host "Press Enter to exit..."; Exit
     }
 
-    # Wait loop for filesystem
-    Write-Host "Waiting for installer to finish..." -NoNewline
-    $Retries = 0
-    $MaxRetries = 30
-    do {
-        Start-Sleep -Seconds 1
-        Write-Host "." -NoNewline
-        $Retries++
-        $Exists = Test-Path $DeployerExe
-    } until ($Exists -or ($Retries -ge $MaxRetries))
+    Write-Host "Waiting for installer..." -NoNewline
+    $Retries = 0; $MaxRetries = 30
+    do { Start-Sleep -Seconds 1; Write-Host "." -NoNewline; $Retries++; $Exists = Test-Path $DeployerExe } until ($Exists -or ($Retries -ge $MaxRetries))
     Write-Host "" 
 
-    if (-not (Test-Path $DeployerExe)) {
-        throw "Timed out waiting for '$DeployerExe'. Please check installation."
-    }
-    Write-Host "Weasel verified at: $DeployerExe" -ForegroundColor Green
+    if (-not (Test-Path $DeployerExe)) { throw "Timed out waiting for '$DeployerExe'." }
+    Write-Host "Weasel verified." -ForegroundColor Green
 } else {
-    Write-Host "Weasel $TargetVersion is already installed." -ForegroundColor Green
+    Write-Host "Weasel $TargetVersion found." -ForegroundColor Green
 }
 
 # ==========================================
 # [STEP 2: INSTALL SYSTEM DATA]
 # ==========================================
 Write-Host "`n[2/4] Installing System Data..."
-Write-Host "Target: $RimeDataDir"
 $TempProgZip = "$env:TEMP\rime_prog_data.zip"
-
 try {
     Invoke-RestMethod -Uri $ProgDataUrl -OutFile $TempProgZip
-    
-    # Ensure the 'data' folder inside weasel-0.17.4 exists
-    if (!(Test-Path $RimeDataDir)) { 
-        New-Item -ItemType Directory -Path $RimeDataDir -Force | Out-Null 
-    }
-    
-    # Unzip into weasel-0.17.4\data
+    if (!(Test-Path $RimeDataDir)) { New-Item -ItemType Directory -Path $RimeDataDir -Force | Out-Null }
     Expand-Archive -Path $TempProgZip -DestinationPath $RimeDataDir -Force
-    Write-Host "System Data installed."
+    Write-Host "System Data installed to: $RimeDataDir"
 } catch {
-    Write-Host "Error installing System Data: $_" -ForegroundColor Red
-    Read-Host "Press Enter to exit..."; Exit
+    Write-Error "SysData Fail: $_"; Read-Host "Exit..."; Exit
 }
 
 # ==========================================
 # [STEP 3: INSTALL USER DATA]
 # ==========================================
 Write-Host "`n[3/4] Installing User Data..."
-Write-Host "Target: $RimeUserDir"
 $TempUserZip = "$env:TEMP\rime_user_data.zip"
-
 try {
     Invoke-RestMethod -Uri $UserDataUrl -OutFile $TempUserZip
     Expand-Archive -Path $TempUserZip -DestinationPath $RimeUserDir -Force
     Write-Host "User Data installed."
 } catch {
-    Write-Host "Error installing User Data: $_" -ForegroundColor Red
+    Write-Error "UserData Fail: $_"
 }
 
 # ==========================================
-# [STEP 4: CLEANUP & DEPLOY]
+# [STEP 4: FIX PERMISSIONS & DEPLOY]
 # ==========================================
 Write-Host "`n[4/4] Finalizing..."
 
+# 4.1 Permission Fix (Prevent Admin ownership lock-out)
+Write-Host "Fixing User Data permissions..."
+try {
+    # Grant 'Users' group Full Control to the AppData\Rime folder
+    $Acl = Get-Acl $RimeUserDir
+    $Ar = New-Object System.Security.AccessControl.FileSystemAccessRule("Users", "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")
+    $Acl.SetAccessRule($Ar)
+    Set-Acl $RimeUserDir $Acl
+} catch {
+    Write-Warning "Could not explicitly set permissions. Usually this is fine."
+}
+
+# 4.2 Cleanup Temp
 Remove-Item $TempProgZip -ErrorAction SilentlyContinue
 Remove-Item $TempUserZip -ErrorAction SilentlyContinue
 Remove-Item "$env:TEMP\rime_installer_elevated.ps1" -ErrorAction SilentlyContinue
 
+# 4.3 Kill Processes BEFORE Deploy
 Stop-Process -Name "WeaselServer" -ErrorAction SilentlyContinue
 Stop-Process -Name "WeaselDeployer" -ErrorAction SilentlyContinue
 
+# 4.4 Execute Deploy (Admin Mode - compiles schemas)
 if (Test-Path $DeployerExe) {
-    Write-Host "Executing Weasel Deployer..."
+    Write-Host "Compiling schemas (Deploy)..."
     Start-Process $DeployerExe -ArgumentList "/deploy" -Wait
-    Write-Host "`nSuccess! Boshiamy installation complete." -ForegroundColor Green
+    
+    # --- CRITICAL FIX ---
+    # 4.5 KILL THE ADMIN SERVER
+    # The deployer likely started WeaselServer as Admin. We MUST kill it.
+    # This allows the User's desktop to start a fresh User-Level process automatically.
+    Write-Host "Resetting Server process..."
+    Stop-Process -Name "WeaselServer" -ErrorAction SilentlyContinue -Force
+    
+    Write-Host "`nSuccess! Boshiamy is ready." -ForegroundColor Green
+    Write-Host "You can switch to Rime input method immediately."
 } else {
-    Write-Error "Deployer executable missing at the last step."
+    Write-Error "Deployer missing."
 }
 
 Read-Host "Press Enter to exit..."
