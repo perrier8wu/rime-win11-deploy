@@ -1,8 +1,8 @@
 <#
 .SYNOPSIS
-    Rime Auto-Installer (V15 - Permission Inheritance Fix)
-    Fixes the "Manual Redeploy" requirement by enforcing User permissions on compiled files.
-2601180229
+    Rime Auto-Installer (V16 - Remove MS Bopomofo)
+    Winget Install + Permission Fix + UI Fix + REMOVE Microsoft Bopomofo.
+2601180237
 #>
 
 # ==========================================
@@ -94,27 +94,22 @@ Stop-Process -Name "WeaselServer" -ErrorAction SilentlyContinue
 Stop-Process -Name "WeaselDeployer" -ErrorAction SilentlyContinue
 
 if (Test-Path $DeployerExe) {
-    # Run the deployment (This creates Admin-owned .bin files)
     Start-Process $DeployerExe -ArgumentList "/deploy" -Wait
 }
 
 # ==========================================
-# [STEP 4: FIX PERMISSIONS (THE FIX)]
+# [STEP 4: FIX PERMISSIONS (icacls)]
 # ==========================================
-# This step is critical. We use icacls to force 'Users' group to have Full Control
-# over everything the Admin script just created.
-Write-Host "Fixing File Permissions..."
+Write-Host "Fixing File Permissions (icacls)..."
 if (Test-Path $RimeUserDir) {
-    # /grant Users:(OI)(CI)F  -> Grant Users group ObjectInherit, ContainerInherit, FullControl
-    # /T                      -> Recursive
-    # /Q                      -> Quiet
+    # Force full control for Users to avoid "Manual Redeploy" issue
     Start-Process icacls -ArgumentList "`"$RimeUserDir`" /grant Users:(OI)(CI)F /T /Q" -NoNewWindow -Wait
 }
 
 # ==========================================
-# [STEP 5: FIX LANGUAGE & RESTORE CHINESE UI]
+# [STEP 5: FIX LANGUAGE & REMOVE BOPOMOFO]
 # ==========================================
-Write-Host "`n[4/4] Sanitizing Language & Restoring Traditional Chinese UI..." -ForegroundColor Yellow
+Write-Host "`n[4/4] Sanitizing Language List..." -ForegroundColor Yellow
 
 try {
     $CleanList = @()
@@ -124,34 +119,38 @@ try {
     $EnglishLang = $CurrentList | Where-Object { $_.LanguageTag -like "en*" } | Select-Object -First 1
     if (-not $EnglishLang) { $EnglishLang = (New-WinUserLanguageList "en-US")[0] }
     $CleanList += $EnglishLang
-    Write-Host " - Input Priority 1: $($EnglishLang.LanguageTag)"
+    Write-Host " - Priority 1: $($EnglishLang.LanguageTag)"
 
-    # 5.2 TRADITIONAL CHINESE (Priority 2)
+    # 5.2 TRADITIONAL CHINESE (Priority 2 - Rime ONLY)
     $TwLang = (New-WinUserLanguageList "zh-TW")[0]
     $RimeTip = "0404:$WeaselGuid"
     
-    if ($TwLang.InputMethodTips -notcontains $RimeTip) {
-        $TwLang.InputMethodTips.Add($RimeTip)
-    }
+    # *** CRITICAL FIX: CLEAR DEFAULT INPUT METHODS (Removes MS Bopomofo) ***
+    $TwLang.InputMethodTips.Clear()
+    
+    # Add ONLY Rime
+    $TwLang.InputMethodTips.Add($RimeTip)
+    
     $CleanList += $TwLang
-    Write-Host " - Input Priority 2: zh-TW (with Rime)"
+    Write-Host " - Priority 2: zh-TW (Rime Only - MS Bopomofo Removed)"
 
-    # 5.3 APPLY
+    # 5.3 APPLY LIST
     Set-WinUserLanguageList $CleanList -Force -ErrorAction Stop
     Write-Host " - Language list cleaned."
 
     # 5.4 FORCE UI TO TRADITIONAL CHINESE
     Set-WinUILanguageOverride -Language "zh-TW"
-    Write-Host " - Display Language LOCKED to: Traditional Chinese (zh-TW)" -ForegroundColor Green
+    Write-Host " - Display Language LOCKED to: zh-TW" -ForegroundColor Green
 
 } catch {
     Write-Error "Language fix failed: $_"
 }
 
-# Final Cleanup of Admin Processes
+# Final Cleanup
 Stop-Process -Name "WeaselServer" -ErrorAction SilentlyContinue -Force
 
 Write-Host "`nSuccess! Boshiamy is ready." -ForegroundColor Green
-Write-Host "Please Sign Out and Sign In again to fully apply the language settings."
+Write-Host "Microsoft Bopomofo has been removed."
+Write-Host "Please Sign Out and Sign In again to see the UI changes."
 Read-Host "Press Enter to exit..."
 
