@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
-    Rime Auto-Installer (V22 - "Steal & Transplant" Strategy)
-    DETECTS where the installer put Rime, CAPTURES the valid GUID, and TRANSPLANTS it to zh-TW.
+    Rime Auto-Installer (Clean Final)
+    Integrates Winget Install, Registry Sync, Permission Fix, and Language Setup.
 #>
 
 # ==========================================
@@ -10,9 +10,8 @@
 $CurrentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $CurrentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host "Requesting Administrator privileges..." -ForegroundColor Yellow
-    $TempScript = "$env:TEMP\rime_installer_elevated.ps1"
-    try { Invoke-RestMethod -Uri "https://perrier8wu.github.io/rime-win11-deploy/install.ps1" -OutFile $TempScript }
-    catch { Write-Error "Download failed."; Start-Sleep 5; Exit }
+    $TempScript = "$env:TEMP\rime_final_install.ps1"
+    $MyInvocation.MyCommand.ScriptBlock | Out-File $TempScript -Encoding UTF8
     Start-Process powershell.exe -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$TempScript`"" -Verb RunAs
     Exit
 }
@@ -20,182 +19,162 @@ if (-not $CurrentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Adm
 # ==========================================
 # [CONFIGURATION]
 # ==========================================
-$ProgDataUrl   = "https://github.com/perrier8wu/rime-win11-deploy/raw/main/data.zip"
-$UserDataUrl   = "https://github.com/perrier8wu/rime-win11-deploy/raw/main/rime_user_data.zip"
 $TargetVersion = "0.17.4"
-$TargetDir     = "C:\Program Files\Rime\weasel-$TargetVersion"
-$DeployerExe   = "$TargetDir\WeaselDeployer.exe" 
-$RimeDataDir   = "$TargetDir\data" 
+$WeaselDir     = "C:\Program Files\Rime\weasel-$TargetVersion"
+$DeployerExe   = "$WeaselDir\WeaselDeployer.exe" 
 $RimeUserDir   = "$env:APPDATA\Rime"
 
-# Weasel GUID fragment to search for
-$WeaselGuidSig = "A3F61664" 
-# Fallback GUID (Standard) just in case detection fails
-$FallbackTip   = "0404:{A3F61664-90B7-4EA0-86FA-5056747127C7}{A3F61664-90B7-4EA0-86FA-5056747127C7}"
-$MsBopomofoGuid = "{B115690A-EA02-48D5-A231-E3578D2FDF80}{B727450D-55D0-4641-8727-2CA8682763F9}"
+# URLs (Data Config)
+$ProgDataUrl   = "https://github.com/perrier8wu/rime-win11-deploy/raw/main/data.zip"
+$UserDataUrl   = "https://github.com/perrier8wu/rime-win11-deploy/raw/main/rime_user_data.zip"
+
+# GUIDs
+$WeaselGuid    = "{A3F61664-90B7-4EA0-86FA-5056747127C7}"
+$BopomofoGuid  = "{B115690A-EA02-48D5-A231-E3578D2FDF80}{B727450D-55D0-4641-8727-2CA8682763F9}"
 
 # ==========================================
 # [STEP 1: INSTALL VIA WINGET]
 # ==========================================
-Write-Host "Checking for Weasel Version $TargetVersion..." -ForegroundColor Cyan
+Write-Host "--- [1/5] Installing Weasel via Winget ---" -ForegroundColor Cyan
 
-if (-not (Test-Path $TargetDir)) {
-    Write-Host "Target folder missing. Initiating Winget installation..."
-    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-        Write-Error "Winget not found."; Read-Host "Exit..."; Exit
-    }
+if (-not (Test-Path $DeployerExe)) {
     try {
         winget install --id Rime.Weasel --version $TargetVersion -h --accept-source-agreements --accept-package-agreements --force
     } catch {
-        Write-Error "Winget failed: $_"; Read-Host "Exit..."; Exit
+        Write-Error "Winget failed: $_"; Pause; Exit
     }
-
-    # Wait for file system
-    Write-Host "Waiting for installer..." -NoNewline
-    $Retries = 0; $MaxRetries = 30
-    do { Start-Sleep -Seconds 1; Write-Host "." -NoNewline; $Retries++; $Exists = Test-Path $DeployerExe } until ($Exists -or ($Retries -ge $MaxRetries))
-    Write-Host "" 
-    if (-not (Test-Path $DeployerExe)) { throw "Timed out waiting for '$DeployerExe'." }
-    Write-Host "Weasel installed." -ForegroundColor Green
     
-    # *** CRITICAL: Wait for Installer to register languages ***
-    Write-Host "Waiting 5s for installer to touch Language List..."
-    Start-Sleep -Seconds 5
+    # Wait for file system
+    Write-Host "Waiting for files..." -NoNewline
+    for ($i=0; $i -lt 30; $i++) { 
+        if (Test-Path $DeployerExe) { break }
+        Start-Sleep -Seconds 1
+        Write-Host "." -NoNewline
+    }
+    Write-Host ""
 } else {
-    Write-Host "Already installed." -ForegroundColor Green
+    Write-Host "Weasel already installed." -ForegroundColor Green
+}
+
+if (-not (Test-Path $DeployerExe)) { Write-Error "Installation failed: Files not found."; Pause; Exit }
+
+# ==========================================
+# [STEP 2: SYNC REGISTRY (HKLM -> HKCU)]
+# ==========================================
+# This is the "Magic Fix" to make Windows see '¤p¯T²@' immediately
+Write-Host "`n--- [2/5] Syncing Registry (HKLM -> HKCU) ---" -ForegroundColor Cyan
+
+$HklmTip  = "HKLM:\SOFTWARE\Microsoft\CTF\TIP\$WeaselGuid"
+$HklmProf = "$HklmTip\LanguageProfile\0x00000404\$WeaselGuid"
+$HkcuTip  = "HKCU:\SOFTWARE\Microsoft\CTF\TIP\$WeaselGuid"
+$HkcuProf = "$HkcuTip\LanguageProfile\0x00000404\$WeaselGuid"
+
+if (Test-Path $HklmProf) {
+    # Ensure User Keys Exist
+    if (-not (Test-Path $HkcuTip))  { New-Item -Path $HkcuTip -Force | Out-Null }
+    if (-not (Test-Path $HkcuProf)) { New-Item -Path $HkcuProf -Force | Out-Null }
+
+    # Sync Properties (Description, Icon, Enable)
+    try {
+        Get-ItemProperty -Path $HklmTip | ForEach-Object {
+            if ($_.Description) { Set-ItemProperty -Path $HkcuTip -Name "Description" -Value $_.Description -Force }
+            if ($_.Icon)        { Set-ItemProperty -Path $HkcuTip -Name "Icon" -Value $_.Icon -Force }
+            Set-ItemProperty -Path $HkcuTip -Name "Enable" -Value 1 -Type DWord -Force
+        }
+        Get-ItemProperty -Path $HklmProf | ForEach-Object {
+            if ($_.Description) { Set-ItemProperty -Path $HkcuProf -Name "Description" -Value $_.Description -Force }
+            if ($_.Icon)        { Set-ItemProperty -Path $HkcuProf -Name "Icon" -Value $_.Icon -Force }
+            Set-ItemProperty -Path $HkcuProf -Name "Enable" -Value 1 -Type DWord -Force
+        }
+        Write-Host "Registry Synced Successfully." -ForegroundColor Green
+    } catch { Write-Warning "Registry Sync Warning: $_" }
+} else {
+    Write-Warning "HKLM Registry missing. Installation might be incomplete."
 }
 
 # ==========================================
-# [STEP 2: INSTALL CONFIG DATA]
+# [STEP 3: CONFIG DATA & DEPLOY]
 # ==========================================
-Write-Host "`n[2/4] Installing Configuration Data..."
-$TempProgZip = "$env:TEMP\rime_prog_data.zip"
-try {
-    Invoke-RestMethod -Uri $ProgDataUrl -OutFile $TempProgZip
-    if (!(Test-Path $RimeDataDir)) { New-Item -ItemType Directory -Path $RimeDataDir -Force | Out-Null }
-    Expand-Archive -Path $TempProgZip -DestinationPath $RimeDataDir -Force
-} catch { Write-Warning "SysData Fail: $_" }
+Write-Host "`n--- [3/5] Installing Config & Deploying ---" -ForegroundColor Cyan
 
-$TempUserZip = "$env:TEMP\rime_user_data.zip"
-try {
-    Invoke-RestMethod -Uri $UserDataUrl -OutFile $TempUserZip
-    Expand-Archive -Path $TempUserZip -DestinationPath $RimeUserDir -Force
-} catch { Write-Warning "UserData Fail: $_" }
+# Download & Unzip Data
+$TempProg = "$env:TEMP\rime_prog.zip"
+$TempUser = "$env:TEMP\rime_user.zip"
+Invoke-RestMethod -Uri $ProgDataUrl -OutFile $TempProg
+Invoke-RestMethod -Uri $UserDataUrl -OutFile $TempUser
 
-Remove-Item $TempProgZip -ErrorAction SilentlyContinue
-Remove-Item $TempUserZip -ErrorAction SilentlyContinue
-Remove-Item "$env:TEMP\rime_installer_elevated.ps1" -ErrorAction SilentlyContinue
+Expand-Archive $TempProg -DestinationPath "$WeaselDir\data" -Force
+Expand-Archive $TempUser -DestinationPath $RimeUserDir -Force
 
-# ==========================================
-# [STEP 3: DEPLOY]
-# ==========================================
-Write-Host "`n[3/4] Compiling Schemas..."
-Stop-Process -Name "WeaselServer" -ErrorAction SilentlyContinue
-Stop-Process -Name "WeaselDeployer" -ErrorAction SilentlyContinue
-if (Test-Path $DeployerExe) {
-    Start-Process $DeployerExe -ArgumentList "/deploy" -Wait
-}
+# Deploy (Generate bin files)
+Start-Process $DeployerExe -ArgumentList "/deploy" -Wait
 
-# ==========================================
-# [STEP 4: FIX PERMISSIONS]
-# ==========================================
-Write-Host "Fixing File Permissions..."
+# FIX PERMISSIONS (icacls) - Critical for "Manual Redeploy" issue
+Write-Host "Fixing User Permissions..."
 if (Test-Path $RimeUserDir) {
     Start-Process icacls -ArgumentList "`"$RimeUserDir`" /grant Users:(OI)(CI)F /T /Q" -NoNewWindow -Wait
 }
 
+# Clean Temp
+Remove-Item $TempProg, $TempUser -ErrorAction SilentlyContinue
+
 # ==========================================
-# [STEP 5: DETECT & TRANSPLANT RIME (THE FIX)]
+# [STEP 4: SETUP INPUT METHODS]
 # ==========================================
-Write-Host "`n[4/4] Sanitizing Language List (Transplant Strategy)..." -ForegroundColor Yellow
+Write-Host "`n--- [4/5] Setting Input Methods ---" -ForegroundColor Cyan
 
 try {
-    # 1. SCAN for Rime in ANY language
-    Write-Host "Scanning system for valid Rime registration..."
+    $TargetTip   = "0404:$WeaselGuid$WeaselGuid"
+    $BopomofoTip = "0404:$BopomofoGuid"
+    
     $CurrentList = Get-WinUserLanguageList
-    $DetectedTip = $null
-    
-    foreach ($Lang in $CurrentList) {
-        foreach ($Tip in $Lang.InputMethodTips) {
-            if ($Tip -match $WeaselGuidSig) {
-                Write-Host " -> FOUND Rime in language: $($Lang.LanguageTag) | TIP: $Tip" -ForegroundColor Cyan
-                $DetectedTip = $Tip
-                break
-            }
-        }
-        if ($DetectedTip) { break }
-    }
+    $CleanList   = @()
 
-    # 2. CONSTRUCT the Target TIP for zh-TW (0404)
-    $TargetRimeTip = $null
-    
-    if ($DetectedTip) {
-        # Format is usually LangID:ProfileGUID
-        # We need to ensure it starts with 0404 (Traditional Chinese)
-        $Split = $DetectedTip -split ":"
-        if ($Split.Count -eq 2) {
-            $TargetRimeTip = "0404:" + $Split[1]
-            Write-Host " -> Constructed Transplant TIP: $TargetRimeTip"
-        }
-    }
-    
-    if (-not $TargetRimeTip) {
-        Write-Warning " -> Could not detect Rime automatically. Using Standard Fallback."
-        $TargetRimeTip = $FallbackTip
-    }
-
-    # 3. BUILD THE NEW CLEAN LIST
-    $CleanList = @()
-
-    # A. English (Priority 1)
+    # 1. English (Priority 1)
     $En = $CurrentList | Where-Object { $_.LanguageTag -like "en*" } | Select-Object -First 1
     if (-not $En) { $En = (New-WinUserLanguageList "en-US")[0] }
     $CleanList += $En
-    Write-Host " - Priority 1: $($En.LanguageTag)"
+    Write-Host " - Added: English ($($En.LanguageTag))"
 
-    # B. Traditional Chinese (Priority 2)
+    # 2. Traditional Chinese (Priority 2)
     $Tw = (New-WinUserLanguageList "zh-TW")[0]
     
-    # C. INJECT RIME (The Transplant)
-    if ($Tw.InputMethodTips -notcontains $TargetRimeTip) {
-        $Tw.InputMethodTips.Add($TargetRimeTip)
-        Write-Host "   -> Added Rime ($TargetRimeTip)"
-    }
-
-    # D. REMOVE BOPOMOFO (Only if Rime added)
-    # Since we are building a NEW object, we don't need to check "if exists", we just don't add it.
-    # BUT New-WinUserLanguageList adds it by default, so we MUST remove it.
-    $BopomofoTip = "0404:$MsBopomofoGuid"
-    if ($Tw.InputMethodTips -contains $BopomofoTip) {
-        $Tw.InputMethodTips.Remove($BopomofoTip)
-        Write-Host "   -> Removed Bopomofo"
+    # Add Weasel
+    if ($Tw.InputMethodTips -notcontains $TargetTip) {
+        $Tw.InputMethodTips.Add($TargetTip)
+        Write-Host " - Added: ¤p¯T²@ (Weasel)"
     }
     
-    # SAFETY: If list is empty, put Bopomofo back
-    if ($Tw.InputMethodTips.Count -eq 0) {
-        Write-Warning "   -> Rime add failed? Restoring Bopomofo."
-        $Tw.InputMethodTips.Add($BopomofoTip)
+    # Remove Bopomofo (Only if Weasel is present)
+    if ($Tw.InputMethodTips -contains $BopomofoTip) {
+        $Tw.InputMethodTips.Remove($BopomofoTip)
+        Write-Host " - Removed: Microsoft Bopomofo"
     }
-
+    
     $CleanList += $Tw
-    Write-Host " - Priority 2: zh-TW (Rime Only)"
 
-    # 4. APPLY (This wipes Simplified Chinese because we didn't add it to CleanList)
+    # Apply List
     Set-WinUserLanguageList $CleanList -Force -ErrorAction Stop
-    Write-Host " - Language list applied."
-
-    # 5. LOCK UI
-    Set-WinUILanguageOverride -Language "zh-TW"
-    Write-Host " - UI Locked to zh-TW." -ForegroundColor Green
+    Write-Host "Language list updated." -ForegroundColor Green
 
 } catch {
-    Write-Error "Language process failed: $_"
+    Write-Error "Language Setup Failed: $_"
 }
 
-Stop-Process -Name "WeaselServer" -ErrorAction SilentlyContinue -Force
+# ==========================================
+# [STEP 5: LOCK UI & CLEANUP]
+# ==========================================
+Write-Host "`n--- [5/5] Finalizing ---" -ForegroundColor Cyan
 
-Write-Host "`nSuccess! Boshiamy is ready." -ForegroundColor Green
-Write-Host "Please Sign Out and Sign In again."
+# Force UI to Traditional Chinese
+Set-WinUILanguageOverride -Language "zh-TW"
+Write-Host "UI Locked to zh-TW."
+
+# Kill Processes to ensure clean restart
+Stop-Process -Name "WeaselServer", "WeaselDeployer" -ErrorAction SilentlyContinue -Force
+
+Write-Host "`n[SUCCESS] Installation Complete!" -ForegroundColor Green
+Write-Host "Please Sign Out and Sign In again to fully apply the UI language."
 Read-Host "Press Enter to exit..."
-#V22
+#V23
 
