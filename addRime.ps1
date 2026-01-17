@@ -1,9 +1,7 @@
 <#
 .SYNOPSIS
-    addRime.ps1 (Final Fix) - Activate the REAL Weasel (¤p¯T²@)
-    1. Fixes Registry Name by running official tool properly.
-    2. Adds "¤p¯T²@" to zh-TW.
-    3. Removes Microsoft Bopomofo.
+    addRime.ps1 (User-Level Force Activate)
+    Syncs HKLM registry to HKCU and modifies Input Method List.
 #>
 
 # ==========================================
@@ -21,78 +19,109 @@ if (-not $CurrentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Adm
 # ==========================================
 # [CONFIG]
 # ==========================================
-$WeaselVersion  = "0.17.4"
-$WeaselDir      = "C:\Program Files\Rime\weasel-$WeaselVersion"
-$WeaselExe      = "$WeaselDir\WeaselDeployer.exe"
-# The OFFICIAL GUID for Weasel (¤p¯T²@)
-$WeaselClsid    = "{A3F61664-90B7-4EA0-86FA-5056747127C7}"
-$BopomofoGuid   = "{B115690A-EA02-48D5-A231-E3578D2FDF80}{B727450D-55D0-4641-8727-2CA8682763F9}"
+# Weasel GUID (CLSID)
+$WeaselGuid     = "{A3F61664-90B7-4EA0-86FA-5056747127C7}"
+# Microsoft Bopomofo GUID
+$MsBopomofoGuid = "{B115690A-EA02-48D5-A231-E3578D2FDF80}{B727450D-55D0-4641-8727-2CA8682763F9}"
 
 # ==========================================
-# [STEP 1: REPAIR REGISTRY (THE NAME FIX)]
+# [STEP 1: SYNC REGISTRY (HKLM -> HKCU)]
 # ==========================================
-Write-Host "--- STEP 1: Running Official Registration (Fixing Name) ---" -ForegroundColor Cyan
+Write-Host "--- STEP 1: Syncing Registry to Current User ---" -ForegroundColor Cyan
 
-if (Test-Path $WeaselExe) {
-    Write-Host "Executing WeaselDeployer to restore '¤p¯T²@' name..."
-    # IMPORTANT: We MUST set WorkingDirectory, otherwise it crashes silently!
-    $Proc = Start-Process -FilePath $WeaselExe -ArgumentList "/install" -WorkingDirectory $WeaselDir -PassThru -Wait
+# Source (System)
+$HklmPath = "HKLM:\SOFTWARE\Microsoft\CTF\TIP\$WeaselGuid"
+$HklmLang = "$HklmPath\LanguageProfile\0x00000404\$WeaselGuid"
+
+# Destination (User)
+$HkcuPath = "HKCU:\SOFTWARE\Microsoft\CTF\TIP\$WeaselGuid"
+$HkcuLang = "$HkcuPath\LanguageProfile\0x00000404\$WeaselGuid"
+
+if (Test-Path $HklmPath) {
+    Write-Host "Found valid System Registration."
     
-    if ($Proc.ExitCode -eq 0) {
-        Write-Host "[SUCCESS] Official registration complete." -ForegroundColor Green
-    } else {
-        Write-Warning "Registration exited with code $($Proc.ExitCode). Assuming it worked."
+    # 1. Create User Keys
+    if (-not (Test-Path $HkcuPath)) { New-Item -Path $HkcuPath -Force | Out-Null }
+    if (-not (Test-Path $HkcuLang)) { New-Item -Path $HkcuLang -Force | Out-Null }
+
+    # 2. Copy properties (Description, Icon, Enable)
+    try {
+        # Copy Root properties
+        Get-ItemProperty -Path $HklmPath | ForEach-Object {
+            if ($_.PSObject.Properties["Description"]) { Set-ItemProperty -Path $HkcuPath -Name "Description" -Value $_.Description -Force }
+            if ($_.PSObject.Properties["Icon"]) { Set-ItemProperty -Path $HkcuPath -Name "Icon" -Value $_.Icon -Force }
+            if ($_.PSObject.Properties["Display Description"]) { Set-ItemProperty -Path $HkcuPath -Name "Display Description" -Value $_."Display Description" -Force }
+            Set-ItemProperty -Path $HkcuPath -Name "Enable" -Value 1 -Type DWord -Force
+        }
+
+        # Copy LanguageProfile properties
+        Get-ItemProperty -Path $HklmLang | ForEach-Object {
+            if ($_.PSObject.Properties["Description"]) { Set-ItemProperty -Path $HkcuLang -Name "Description" -Value $_.Description -Force }
+            if ($_.PSObject.Properties["Icon"]) { Set-ItemProperty -Path $HkcuLang -Name "Icon" -Value $_.Icon -Force }
+            Set-ItemProperty -Path $HkcuLang -Name "Enable" -Value 1 -Type DWord -Force
+        }
+        Write-Host "[SUCCESS] Synced settings to HKCU." -ForegroundColor Green
+    } catch {
+        Write-Warning "Sync warning: $_"
     }
-    # Wait for Registry I/O
-    Start-Sleep -Seconds 2
 } else {
-    Write-Error "CRITICAL: WeaselDeployer not found at $WeaselExe"
+    Write-Error "CRITICAL: HKLM Registry Key missing! Cannot sync."
     Pause; Exit
 }
 
 # ==========================================
-# [STEP 2: ADD "¤p¯T²@" & REMOVE BOPOMOFO]
+# [STEP 2: MODIFY INPUT LIST]
 # ==========================================
-Write-Host "`n--- STEP 2: Configuring Input Methods ---" -ForegroundColor Cyan
+Write-Host "`n--- STEP 2: Updating Language List ---" -ForegroundColor Cyan
+
+# TSF Format: LangID:CLSID{ProfileGUID}
+# For Weasel, ProfileGUID is same as CLSID
+$RimeTip     = "0404:$WeaselGuid$WeaselGuid"
+$BopomofoTip = "0404:$MsBopomofoGuid"
 
 try {
-    # This GUID now points to "¤p¯T²@" (because we ran /install above)
-    $RealWeaselTip = "0404:$WeaselClsid$WeaselClsid"
-    $BopomofoTip   = "0404:$BopomofoGuid"
-    
     $CurrentList = Get-WinUserLanguageList
-    $TwLang = $CurrentList | Where-Object { $_.LanguageTag -eq "zh-TW" }
     
+    # 1. Get/Create zh-TW
+    $TwLang = $CurrentList | Where-Object { $_.LanguageTag -eq "zh-TW" }
     if (-not $TwLang) {
         Write-Host "Creating zh-TW..."
         $TwLang = (New-WinUserLanguageList "zh-TW")[0]
         $CurrentList.Add($TwLang)
     }
 
-    # 1. Add Official Weasel
-    if ($TwLang.InputMethodTips -notcontains $RealWeaselTip) {
-        Write-Host "Adding '¤p¯T²@' to list..."
-        $TwLang.InputMethodTips.Add($RealWeaselTip)
+    # 2. Add Rime
+    if ($TwLang.InputMethodTips -notcontains $RimeTip) {
+        Write-Host "Adding Rime ($RimeTip)..."
+        $TwLang.InputMethodTips.Add($RimeTip)
     } else {
-        Write-Host "'¤p¯T²@' is already in the list."
+        Write-Host "Rime is already in the list object."
     }
 
-    # 2. Remove Bopomofo
+    # 3. Remove Bopomofo (Conditional)
     if ($TwLang.InputMethodTips -contains $BopomofoTip) {
         Write-Host "Removing Microsoft Bopomofo..."
         $TwLang.InputMethodTips.Remove($BopomofoTip)
     }
 
-    # 3. Apply
-    Write-Host "Applying settings..."
+    # 4. Apply
+    Write-Host "Applying settings to Windows..."
     Set-WinUserLanguageList $CurrentList -Force -ErrorAction Stop
     
-    # 4. Lock UI (Optional, consistent with your needs)
-    Set-WinUILanguageOverride -Language "zh-TW"
-    Write-Host "UI Locked to Traditional Chinese."
-
-    Write-Host "[SUCCESS] Configuration updated." -ForegroundColor Green
-    Write-Host "Please check your language bar. It should now show '¤p¯T²@'."
+    # 5. Verification
+    Start-Sleep -Seconds 2
+    $VerifyList = Get-WinUserLanguageList
+    $VerifyTw = $VerifyList | Where-Object { $_.LanguageTag -eq "zh-TW" }
+    
+    if ($VerifyTw.InputMethodTips -contains $RimeTip) {
+        Write-Host "VERIFIED: Rime is active!" -ForegroundColor Green
+        
+        # Lock UI (Optional)
+        Set-WinUILanguageOverride -Language "zh-TW"
+        Write-Host "UI Locked to zh-TW."
+    } else {
+        Write-Host "WARNING: Windows dropped Rime from the list." -ForegroundColor Red
+    }
 
 } catch {
     Write-Error "Error: $_"
@@ -103,5 +132,5 @@ if (Test-Path "$env:TEMP\addrime_elevated.ps1") { Remove-Item "$env:TEMP\addrime
 
 Write-Host "`nDone."
 Read-Host "Press Enter to exit..."
-#V4
+#V5
 
