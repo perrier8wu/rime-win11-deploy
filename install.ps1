@@ -1,9 +1,7 @@
 <#
 .SYNOPSIS
-    Rime Auto-Installer (V18 - 3-Stage Sequential Language Fix)
-    Stage 1: Initialize zh-TW
-    Stage 2: Inject Rime
-    Stage 3: Remove Bopomofo
+    Rime Auto-Installer (V19 - Registry Wait Fix)
+    Fixes "Rime not added" issue by waiting for TSF Registry Registration.
 #>
 
 # ==========================================
@@ -31,7 +29,9 @@ $DeployerExe   = "$TargetDir\WeaselDeployer.exe"
 $RimeDataDir   = "$TargetDir\data" 
 $RimeUserDir   = "$env:APPDATA\Rime"
 
-$WeaselGuid    = "{A3F61664-90B7-4EA0-86FA-5056747127C7}{A3F61664-90B7-4EA0-86FA-5056747127C7}"
+# Critical GUIDs
+$WeaselGuid    = "{A3F61664-90B7-4EA0-86FA-5056747127C7}"
+$WeaselTip     = "0404:$WeaselGuid$WeaselGuid" # Standard TSF format
 $MsBopomofoGuid = "{B115690A-EA02-48D5-A231-E3578D2FDF80}{B727450D-55D0-4641-8727-2CA8682763F9}"
 
 # ==========================================
@@ -49,12 +49,28 @@ if (-not (Test-Path $TargetDir)) {
     } catch {
         Write-Error "Winget failed: $_"; Read-Host "Exit..."; Exit
     }
-    Write-Host "Waiting for installer..." -NoNewline
-    $Retries = 0; $MaxRetries = 30
-    do { Start-Sleep -Seconds 1; Write-Host "." -NoNewline; $Retries++; $Exists = Test-Path $DeployerExe } until ($Exists -or ($Retries -ge $MaxRetries))
+
+    # --- CRITICAL FIX: WAIT FOR REGISTRY, NOT JUST FILES ---
+    Write-Host "Waiting for Registry Registration..." -NoNewline
+    $RegPath = "HKLM:\SOFTWARE\Microsoft\CTF\TIP\$WeaselGuid"
+    $Retries = 0; $MaxRetries = 60 # Wait up to 60 seconds
+    
+    do { 
+        Start-Sleep -Seconds 1
+        Write-Host "." -NoNewline
+        $Retries++
+        $RegExists = Test-Path $RegPath
+    } until ($RegExists -or ($Retries -ge $MaxRetries))
     Write-Host "" 
-    if (-not (Test-Path $DeployerExe)) { throw "Timed out waiting for '$DeployerExe'." }
-    Write-Host "Weasel installed." -ForegroundColor Green
+
+    if (-not $RegExists) { 
+        throw "Timed out waiting for Registry Key: $RegPath. Installation might have failed." 
+    }
+    
+    Write-Host "Registry verified. Waiting 3s for stabilization..."
+    Start-Sleep -Seconds 3 # Extra buffer for Windows to index the key
+    Write-Host "Weasel installed & Registered." -ForegroundColor Green
+
 } else {
     Write-Host "Already installed." -ForegroundColor Green
 }
@@ -99,84 +115,76 @@ if (Test-Path $RimeUserDir) {
 }
 
 # ==========================================
-# [STEP 5: FIX LANGUAGE (3-STAGE ROCKET)]
+# [STEP 5: FIX LANGUAGE (3-STAGE)]
 # ==========================================
-Write-Host "`n[4/4] Sanitizing Language List (3-Stage Process)..." -ForegroundColor Yellow
-
-$RimeTip = "0404:$WeaselGuid"
-$BopomofoTip = "0404:$MsBopomofoGuid"
+Write-Host "`n[4/4] Sanitizing Language List (Registry Checked)..." -ForegroundColor Yellow
 
 try {
-    # --- STAGE A: BASE INITIALIZATION ---
-    # Goal: Ensure System has [English, zh-TW(Default)]
-    Write-Host "Stage A: Initializing Base Languages..."
-    
+    # --- STAGE A: INIT ---
+    Write-Host "Stage A: Initializing..."
     $List_A = @()
-    # 1. English
+    # English
     $Curr = Get-WinUserLanguageList
     $En = $Curr | Where-Object { $_.LanguageTag -like "en*" } | Select-Object -First 1
     if (-not $En) { $En = (New-WinUserLanguageList "en-US")[0] }
     $List_A += $En
     
-    # 2. zh-TW (Default Microsoft Bopomofo)
+    # zh-TW (Reset)
     $Tw = (New-WinUserLanguageList "zh-TW")[0]
     $List_A += $Tw
     
     Set-WinUserLanguageList $List_A -Force -ErrorAction Stop
     Write-Host " -> Base initialized."
 
-    # --- STAGE B: INJECT RIME ---
-    # Goal: Add Rime to the existing zh-TW
+    # --- STAGE B: INJECT ---
     Write-Host "Stage B: Injecting Rime..."
+    # Force a small pause to let Windows refresh its internal list
+    Start-Sleep -Milliseconds 500
     
-    # Reload fresh list from system
     $List_B = Get-WinUserLanguageList
     $Tw_Target = $List_B | Where-Object { $_.LanguageTag -eq "zh-TW" }
     
     if ($Tw_Target) {
-        if ($Tw_Target.InputMethodTips -notcontains $RimeTip) {
-            $Tw_Target.InputMethodTips.Add($RimeTip)
+        # Check if Windows recognizes the GUID is valid
+        if ($Tw_Target.InputMethodTips -notcontains $WeaselTip) {
+            $Tw_Target.InputMethodTips.Add($WeaselTip)
             Set-WinUserLanguageList $List_B -Force -ErrorAction Stop
-            Write-Host " -> Rime injected successfully."
+            Write-Host " -> Rime injected."
         } else {
-            Write-Host " -> Rime already present."
+            Write-Host " -> Rime already there."
         }
-    } else {
-        throw "Critical: zh-TW missing after Stage A."
     }
 
-    # --- STAGE C: REMOVE BOPOMOFO & LOCK UI ---
-    # Goal: Remove MS Bopomofo and Lock UI
-    Write-Host "Stage C: Removing Bopomofo & Locking UI..."
+    # --- STAGE C: CLEANUP ---
+    Write-Host "Stage C: Removing Bopomofo..."
+    Start-Sleep -Milliseconds 500
     
-    # Reload fresh list again
     $List_C = Get-WinUserLanguageList
     $Tw_Final = $List_C | Where-Object { $_.LanguageTag -eq "zh-TW" }
+    $BopomofoTip = "0404:$MsBopomofoGuid"
     
     if ($Tw_Final) {
-        if ($Tw_Final.InputMethodTips -contains $BopomofoTip) {
-            # Only remove if Rime is actually there (Safety)
-            if ($Tw_Final.InputMethodTips -contains $RimeTip) {
+        if ($Tw_Final.InputMethodTips -contains $WeaselTip) {
+             if ($Tw_Final.InputMethodTips -contains $BopomofoTip) {
                 $Tw_Final.InputMethodTips.Remove($BopomofoTip)
                 Set-WinUserLanguageList $List_C -Force -ErrorAction Stop
-                Write-Host " -> Microsoft Bopomofo removed."
-            } else {
-                Write-Warning " -> Rime not detected. Skipping Bopomofo removal to prevent empty list."
-            }
+                Write-Host " -> Bopomofo removed."
+             }
+        } else {
+            Write-Warning " -> Rime injection check failed. Keeping Bopomofo."
         }
     }
 
-    # Lock UI Language
     Set-WinUILanguageOverride -Language "zh-TW"
-    Write-Host " -> UI Locked to zh-TW." -ForegroundColor Green
+    Write-Host " -> UI Locked." -ForegroundColor Green
 
 } catch {
     Write-Error "Language process failed: $_"
 }
 
-# Final Cleanup
 Stop-Process -Name "WeaselServer" -ErrorAction SilentlyContinue -Force
 
 Write-Host "`nSuccess! Boshiamy is ready." -ForegroundColor Green
-Write-Host "Please Sign Out and Sign In again to fully apply settings."
+Write-Host "Please Sign Out and Sign In again."
 Read-Host "Press Enter to exit..."
+#V19
