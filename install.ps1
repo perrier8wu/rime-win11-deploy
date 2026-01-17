@@ -1,7 +1,6 @@
 <#
 .SYNOPSIS
-    Rime Auto-Installer (V8 - Fix Simplified Chinese Issue)
-2601180109
+    Rime Auto-Installer (V9 - Strict Language Whitelist)
 #>
 
 # ==========================================
@@ -20,7 +19,7 @@ $DeployerExe   = "$TargetDir\WeaselDeployer.exe"
 $RimeDataDir   = "$TargetDir\data" 
 $RimeUserDir   = "$env:APPDATA\Rime"
 
-# Weasel TSF GUID (Standard)
+# Weasel TSF GUID (Double GUID is required for full TSF registration)
 $WeaselGuid    = "{A3F61664-90B7-4EA0-86FA-5056747127C7}{A3F61664-90B7-4EA0-86FA-5056747127C7}"
 
 # ==========================================
@@ -122,62 +121,57 @@ if (Test-Path $DeployerExe) {
 }
 
 # ==========================================
-# [STEP 5: LANGUAGE CLEANUP (NEW!)]
+# [STEP 5: STRICT LANGUAGE RESET (V9)]
 # ==========================================
-Write-Host "`n[5/5] Sanitizing Language List (Removing Simplified Chinese)..." -ForegroundColor Yellow
+Write-Host "`n[5/5] Enforcing Strict Language Policy..." -ForegroundColor Yellow
+Write-Host "Policy: [English + Traditional Chinese (Rime)] ONLY."
 
 try {
-    # 1. Get current list
-    $OldList = Get-WinUserLanguageList
-    $NewList = New-Object System.Collections.Generic.List[Microsoft.InternationalSettings.Commands.WinUserLanguage]
-    
-    # 2. Ensure zh-TW exists in our new plan
-    $HasTW = $false
-    
-    # 3. Filter the list
-    foreach ($Lang in $OldList) {
-        # SKIP Simplified Chinese (zh-CN)
-        if ($Lang.LanguageTag -eq "zh-CN") {
-            Write-Host " - Removing Simplified Chinese (zh-CN)..." -ForegroundColor Red
-            continue 
-        }
-        
-        # Track if we have TW
-        if ($Lang.LanguageTag -eq "zh-TW") { $HasTW = $true }
-        
-        $NewList.Add($Lang)
-    }
+    # 1. Define the CLEAN List (Empty initially)
+    $CleanList = New-Object System.Collections.Generic.List[Microsoft.InternationalSettings.Commands.WinUserLanguage]
 
-    # 4. If TW is missing (rare, but possible), add it
-    if (-not $HasTW) {
-        Write-Host " - Adding Traditional Chinese (zh-TW)..."
-        $TwLang = New-WinUserLanguageList "zh-TW"
-        $NewList.Add($TwLang[0])
+    # 2. Find an existing English language to keep (Prefer US, or whatever user has)
+    $CurrentList = Get-WinUserLanguageList
+    $EnglishLang = $CurrentList | Where-Object { $_.LanguageTag -like "en*" } | Select-Object -First 1
+    
+    if (-not $EnglishLang) {
+        Write-Host " - No English found, adding en-US default."
+        $EnglishLang = New-WinUserLanguageList "en-US"
+        $EnglishLang = $EnglishLang[0]
+    } else {
+        Write-Host " - Keeping English: $($EnglishLang.LanguageTag)"
+    }
+    $CleanList.Add($EnglishLang)
+
+    # 3. Create/Prepare Traditional Chinese (zh-TW)
+    # We create a fresh object to ensure no junk data from previous states
+    $TwLangList = New-WinUserLanguageList "zh-TW"
+    $TwLang = $TwLangList[0]
+    
+    # 4. Inject Rime into zh-TW
+    $RimeTip = "0404:$WeaselGuid"
+    Write-Host " - Injecting Rime into zh-TW..."
+    
+    # Check if MS Bopomofo is there, we keep it as backup or just add Rime? 
+    # Usually New-WinUserLanguageList adds MS Bopomofo by default. We append Rime.
+    if ($TwLang.InputMethodTips -notcontains $RimeTip) {
+        $TwLang.InputMethodTips.Add($RimeTip)
     }
     
-    # 5. FORCE Rime into zh-TW Input Methods
-    # We iterate through the NewList to find zh-TW and inject the IME
-    foreach ($Lang in $NewList) {
-        if ($Lang.LanguageTag -eq "zh-TW") {
-            # Construct the TSF TIP string for Traditional Chinese (0404)
-            # Format: 0404:{GUID}{GUID}
-            $RimeTip = "0404:$WeaselGuid"
-            
-            if ($Lang.InputMethodTips -notcontains $RimeTip) {
-                Write-Host " - Injecting Rime into zh-TW..."
-                $Lang.InputMethodTips.Add($RimeTip)
-            }
-        }
-    }
+    $CleanList.Add($TwLang)
 
-    # 6. Apply the clean list
-    Set-WinUserLanguageList $NewList -Force
-    Write-Host "Language list fixed: English + Traditional Chinese Only." -ForegroundColor Green
+    # 5. EXECUTE THE OVERWRITE
+    # This command replaces the ENTIRE system list with our CleanList.
+    # Anything not in CleanList (like zh-CN) is effectively deleted.
+    Set-WinUserLanguageList $CleanList -Force
+    
+    Write-Host "Language list successfully reset!" -ForegroundColor Green
 
 } catch {
-    Write-Warning "Language cleanup encountered an error: $_"
-    Write-Warning "You may need to remove Simplified Chinese manually in Settings."
+    Write-Error "Language enforcement failed: $_"
+    Write-Host "Please manually remove Simplified Chinese in Settings if it persists."
 }
 
 Write-Host "`nSuccess! Boshiamy is ready." -ForegroundColor Green
 Read-Host "Press Enter to exit..."
+
