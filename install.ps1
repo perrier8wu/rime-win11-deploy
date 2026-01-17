@@ -1,6 +1,8 @@
 <#
 .SYNOPSIS
     Rime Customization Installer (Strictly bound to Weasel 0.17.4)
+
+2601171705
 #>
 
 # ==========================================
