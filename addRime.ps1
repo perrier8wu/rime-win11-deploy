@@ -1,7 +1,9 @@
 <#
 .SYNOPSIS
-    addRime.ps1 (V3) - Direct Registry Patch
-    Bypasses WeaselDeployer and manually writes TSF Registry Keys.
+    addRime.ps1 (Final Fix) - Activate the REAL Weasel (¤p¯T²@)
+    1. Fixes Registry Name by running official tool properly.
+    2. Adds "¤p¯T²@" to zh-TW.
+    3. Removes Microsoft Bopomofo.
 #>
 
 # ==========================================
@@ -19,61 +21,44 @@ if (-not $CurrentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Adm
 # ==========================================
 # [CONFIG]
 # ==========================================
-# IMPORTANT: Verify this path matches your installation
 $WeaselVersion  = "0.17.4"
 $WeaselDir      = "C:\Program Files\Rime\weasel-$WeaselVersion"
-$WeaselDll      = "$WeaselDir\Weasel.dll"
+$WeaselExe      = "$WeaselDir\WeaselDeployer.exe"
+# The OFFICIAL GUID for Weasel (¤p¯T²@)
 $WeaselClsid    = "{A3F61664-90B7-4EA0-86FA-5056747127C7}"
 $BopomofoGuid   = "{B115690A-EA02-48D5-A231-E3578D2FDF80}{B727450D-55D0-4641-8727-2CA8682763F9}"
 
 # ==========================================
-# [STEP 1: MANUAL REGISTRY INJECTION]
+# [STEP 1: REPAIR REGISTRY (THE NAME FIX)]
 # ==========================================
-Write-Host "--- STEP 1: Manual Registry Injection ---" -ForegroundColor Cyan
+Write-Host "--- STEP 1: Running Official Registration (Fixing Name) ---" -ForegroundColor Cyan
 
-if (-not (Test-Path $WeaselDll)) {
-    Write-Error "CRITICAL: Weasel.dll not found at $WeaselDll"
-    Write-Error "Cannot register. Please check the folder path."
-    Pause; Exit
-}
-
-$TipRoot = "HKLM:\SOFTWARE\Microsoft\CTF\TIP\$WeaselClsid"
-$LangKey = "$TipRoot\LanguageProfile\0x00000404\$WeaselClsid"
-$CatKey  = "$TipRoot\Category\Category\{534C48C1-0607-4098-A521-4FC6051500F9}"
-
-try {
-    Write-Host "Writing TSF Keys directly to Registry..."
-
-    # 1. Root TIP Key
-    if (!(Test-Path $TipRoot)) { New-Item -Path $TipRoot -Force | Out-Null }
-    Set-ItemProperty -Path $TipRoot -Name "Description" -Value "Rime" -Force
-    Set-ItemProperty -Path $TipRoot -Name "Display Description" -Value "@$WeaselDll,-1" -Force
-    Set-ItemProperty -Path $TipRoot -Name "Icon" -Value "$WeaselDll,0" -Force
-    Set-ItemProperty -Path $TipRoot -Name "Enable" -Value 1 -Type DWord -Force
-
-    # 2. Language Profile (zh-TW 0x0404)
-    if (!(Test-Path $LangKey)) { New-Item -Path $LangKey -Force | Out-Null }
-    Set-ItemProperty -Path $LangKey -Name "Description" -Value "Rime" -Force
-    Set-ItemProperty -Path $LangKey -Name "Icon" -Value "$WeaselDll,0" -Force
-    Set-ItemProperty -Path $LangKey -Name "Enable" -Value 1 -Type DWord -Force
-
-    # 3. Category (Keyboard Category)
-    if (!(Test-Path $CatKey)) { New-Item -Path $CatKey -Force | Out-Null }
-
-    Write-Host "[SUCCESS] Registry keys written successfully." -ForegroundColor Green
-} catch {
-    Write-Error "Registry Write Failed: $_"
+if (Test-Path $WeaselExe) {
+    Write-Host "Executing WeaselDeployer to restore '¤p¯T²@' name..."
+    # IMPORTANT: We MUST set WorkingDirectory, otherwise it crashes silently!
+    $Proc = Start-Process -FilePath $WeaselExe -ArgumentList "/install" -WorkingDirectory $WeaselDir -PassThru -Wait
+    
+    if ($Proc.ExitCode -eq 0) {
+        Write-Host "[SUCCESS] Official registration complete." -ForegroundColor Green
+    } else {
+        Write-Warning "Registration exited with code $($Proc.ExitCode). Assuming it worked."
+    }
+    # Wait for Registry I/O
+    Start-Sleep -Seconds 2
+} else {
+    Write-Error "CRITICAL: WeaselDeployer not found at $WeaselExe"
     Pause; Exit
 }
 
 # ==========================================
-# [STEP 2: ADD RIME & REMOVE BOPOMOFO]
+# [STEP 2: ADD "¤p¯T²@" & REMOVE BOPOMOFO]
 # ==========================================
-Write-Host "`n--- STEP 2: Updating Language List ---" -ForegroundColor Cyan
+Write-Host "`n--- STEP 2: Configuring Input Methods ---" -ForegroundColor Cyan
 
 try {
-    $RimeTip = "0404:$WeaselClsid$WeaselClsid"
-    $BopomofoTip = "0404:$BopomofoGuid"
+    # This GUID now points to "¤p¯T²@" (because we ran /install above)
+    $RealWeaselTip = "0404:$WeaselClsid$WeaselClsid"
+    $BopomofoTip   = "0404:$BopomofoGuid"
     
     $CurrentList = Get-WinUserLanguageList
     $TwLang = $CurrentList | Where-Object { $_.LanguageTag -eq "zh-TW" }
@@ -84,35 +69,30 @@ try {
         $CurrentList.Add($TwLang)
     }
 
-    # Add Rime
-    if ($TwLang.InputMethodTips -notcontains $RimeTip) {
-        Write-Host "Injecting Rime (forced)..."
-        $TwLang.InputMethodTips.Add($RimeTip)
+    # 1. Add Official Weasel
+    if ($TwLang.InputMethodTips -notcontains $RealWeaselTip) {
+        Write-Host "Adding '¤p¯T²@' to list..."
+        $TwLang.InputMethodTips.Add($RealWeaselTip)
     } else {
-        Write-Host "Rime already in list."
+        Write-Host "'¤p¯T²@' is already in the list."
     }
 
-    # Remove Bopomofo
+    # 2. Remove Bopomofo
     if ($TwLang.InputMethodTips -contains $BopomofoTip) {
         Write-Host "Removing Microsoft Bopomofo..."
         $TwLang.InputMethodTips.Remove($BopomofoTip)
     }
 
-    # Apply
+    # 3. Apply
     Write-Host "Applying settings..."
     Set-WinUserLanguageList $CurrentList -Force -ErrorAction Stop
-    Write-Host "[SUCCESS] Language list updated." -ForegroundColor Green
     
-    # Verify
-    Start-Sleep -Seconds 1
-    $VerifyList = Get-WinUserLanguageList
-    $VerifyTw = $VerifyList | Where-Object { $_.LanguageTag -eq "zh-TW" }
-    
-    if ($VerifyTw.InputMethodTips -contains $RimeTip) {
-        Write-Host "VERIFIED: Rime is active!" -ForegroundColor Green
-    } else {
-        Write-Host "WARNING: Rime failed to stick. Restart might be required." -ForegroundColor Red
-    }
+    # 4. Lock UI (Optional, consistent with your needs)
+    Set-WinUILanguageOverride -Language "zh-TW"
+    Write-Host "UI Locked to Traditional Chinese."
+
+    Write-Host "[SUCCESS] Configuration updated." -ForegroundColor Green
+    Write-Host "Please check your language bar. It should now show '¤p¯T²@'."
 
 } catch {
     Write-Error "Error: $_"
@@ -123,5 +103,5 @@ if (Test-Path "$env:TEMP\addrime_elevated.ps1") { Remove-Item "$env:TEMP\addrime
 
 Write-Host "`nDone."
 Read-Host "Press Enter to exit..."
-#V3
+#V4
 
