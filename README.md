@@ -7,10 +7,13 @@ Rime (Weasel) Windows 11 自動部署
 PowerShell
 
 irm https://perrier8wu.github.io/rime-win11-deploy/install.ps1 | iex
+
+
 🗑️ 移除 (Uninstall)
 若需完整移除小狼毫、清除設定檔並恢復微軟注音，請執行：
 
 PowerShell
 
 irm https://perrier8wu.github.io/rime-win11-deploy/uninstall.ps1 | iex
+
 (注意：腳本會自動請求提權，請確保網路連線正常以進行檔案下載。)
